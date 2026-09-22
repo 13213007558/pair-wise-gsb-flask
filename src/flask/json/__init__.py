@@ -3,6 +3,7 @@ from __future__ import annotations
 import json as _json
 import typing as t
 
+from ..globals import _cv_app
 from ..globals import current_app
 from .provider import _default
 
@@ -154,6 +155,10 @@ def jsonify(*args: t.Any, **kwargs: t.Any) -> Response:
         treat as a list to serialize.
     :param kwargs: Treat as a dict to serialize.
 
+    .. versionchanged:: 3.2
+        Uses the JSON provider selected for the current request's
+        blueprint, if one is registered.
+
     .. versionchanged:: 2.2
         Calls ``current_app.json.response``, allowing an app to override
         the behavior.
@@ -167,4 +172,9 @@ def jsonify(*args: t.Any, **kwargs: t.Any) -> Response:
 
     .. versionadded:: 0.2
     """
-    return current_app.json.response(*args, **kwargs)  # type: ignore[return-value]
+    if (ctx := _cv_app.get(None)) is not None and ctx.has_request:
+        provider = current_app._get_json_provider(ctx.request.blueprints)
+    else:
+        provider = current_app.json
+
+    return provider.response(*args, **kwargs)  # type: ignore[return-value]

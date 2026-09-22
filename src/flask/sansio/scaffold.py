@@ -21,6 +21,8 @@ from ..templating import _default_template_ctx_processor
 if t.TYPE_CHECKING:  # pragma: no cover
     from click import Group
 
+    from ..json.provider import JSONProvider
+
 # a singleton sentinel value for parameter defaults
 _sentinel = object()
 
@@ -71,6 +73,22 @@ class Scaffold:
     name: str
     _static_folder: str | None = None
     _static_url_path: str | None = None
+
+    json_provider_class: type[JSONProvider] | None = None
+    """A subclass of :class:`~flask.json.provider.JSONProvider` to use
+    for requests handled by this object. An instance is created and
+    stored on the app, keyed by the name this is registered under, when
+    this is registered on the app.
+
+    ``None``, the default, means requests will use the app's
+    :attr:`~flask.Flask.json` provider. :class:`~flask.Flask` sets this
+    to :class:`~flask.json.provider.DefaultJSONProvider`.
+
+    This can be overridden per registration by passing ``json_provider``
+    to :meth:`~flask.Flask.register_blueprint`.
+
+    .. versionadded:: 3.2
+    """
 
     def __init__(
         self,

@@ -232,6 +232,17 @@ Jinja's ``|tojson`` filter is configured to use the app's JSON provider.
 The filter marks the output with ``|safe``. Use it to render data inside
 HTML ``<script>`` tags.
 
+A blueprint can use a different provider for its requests by setting
+:attr:`flask.Blueprint.json_provider_class`, or by passing the
+``json_provider`` option to :meth:`~flask.Flask.register_blueprint`.
+The provider is selected based on the blueprint matched for the current
+request, searching nested blueprints from the innermost out. Requests
+that don't match a blueprint with a provider use ``app.json``. The
+selection applies to dict and list return values, :func:`jsonify`,
+:meth:`request.get_json <flask.Request.get_json>`, error responses, and
+parsing the response with :meth:`response.get_json
+<flask.Response.get_json>` after the request has ended.
+
 .. sourcecode:: html+jinja
 
     <script>

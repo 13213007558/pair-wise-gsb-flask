@@ -344,3 +344,237 @@ def test_html_method():
 
     result = json.dumps(ObjectWithHTML())
     assert result == '"<p>test</p>"'
+
+
+class CurrencyJSONProvider(DefaultJSONProvider):
+    """A distinct representation to test blueprint providers. Serializes
+    ``Decimal`` as an object with a currency, and parses JSON floats as
+    ``Decimal``.
+    """
+
+    def default(self, o):
+        if isinstance(o, decimal.Decimal):
+            return {"amount": str(o), "currency": "EUR"}
+
+        return super().default(o)
+
+    def loads(self, s, **kwargs):
+        kwargs.setdefault("parse_float", decimal.Decimal)
+        return super().loads(s, **kwargs)
+
+
+def test_blueprint_json_provider(app, client):
+    bp = flask.Blueprint("bp", __name__)
+    bp.json_provider_class = CurrencyJSONProvider
+
+    @bp.route("/dict")
+    def bp_dict():
+        return {"value": decimal.Decimal("1.5")}
+
+    @bp.route("/jsonify")
+    def bp_jsonify():
+        return flask.jsonify(value=decimal.Decimal("1.5"))
+
+    @app.route("/dict")
+    def app_dict():
+        return {"value": decimal.Decimal("1.5")}
+
+    @app.route("/jsonify")
+    def app_jsonify():
+        return flask.jsonify(value=decimal.Decimal("1.5"))
+
+    app.register_blueprint(bp, url_prefix="/bp")
+
+    expected = {"value": {"amount": "1.5", "currency": "EUR"}}
+    assert client.get("/bp/dict").get_json() == expected
+    assert client.get("/bp/jsonify").get_json() == expected
+    assert client.get("/dict").get_json() == {"value": "1.5"}
+    assert client.get("/jsonify").get_json() == {"value": "1.5"}
+
+
+def test_blueprint_json_provider_request(app, client):
+    bp = flask.Blueprint("bp", __name__)
+    bp.json_provider_class = CurrencyJSONProvider
+
+    @bp.route("/echo", methods=["POST"])
+    def bp_echo():
+        data = flask.request.get_json()
+        return {"type": type(data["value"]).__name__}
+
+    @app.route("/echo", methods=["POST"])
+    def app_echo():
+        data = flask.request.get_json()
+        return {"type": type(data["value"]).__name__}
+
+    app.register_blueprint(bp, url_prefix="/bp")
+
+    rv = client.post("/bp/echo", json={"value": 1.5})
+    assert rv.get_json() == {"type": "Decimal"}
+    rv = client.post("/echo", json={"value": 1.5})
+    assert rv.get_json() == {"type": "float"}
+
+
+def test_blueprint_json_provider_response_get_json(app, client):
+    """get_json on a response uses the provider that created it, even
+    after the request context is gone.
+    """
+    bp = flask.Blueprint("bp", __name__)
+    bp.json_provider_class = CurrencyJSONProvider
+
+    @bp.route("/")
+    def bp_index():
+        return {"value": 1.5}
+
+    @app.route("/")
+    def app_index():
+        return {"value": 1.5}
+
+    app.register_blueprint(bp, url_prefix="/bp")
+
+    bp_rv = client.get("/bp/")
+    app_rv = client.get("/")
+    assert isinstance(bp_rv.get_json()["value"], decimal.Decimal)
+    assert isinstance(app_rv.get_json()["value"], float)
+
+
+def test_blueprint_json_provider_interleaved(app, client):
+    """Interleaved requests and out-of-order parsing must not mix up
+    providers.
+    """
+    bp = flask.Blueprint("bp", __name__)
+    bp.json_provider_class = CurrencyJSONProvider
+
+    @bp.route("/")
+    def bp_index():
+        return {"value": 1.5}
+
+    @app.route("/")
+    def app_index():
+        return {"value": 1.5}
+
+    app.register_blueprint(bp, url_prefix="/bp")
+
+    responses = []
+
+    for _ in range(3):
+        responses.append((client.get("/bp/"), decimal.Decimal))
+        responses.append((client.get("/"), float))
+
+    for rv, type_ in reversed(responses):
+        assert isinstance(rv.get_json()["value"], type_)
+
+
+def test_blueprint_json_provider_nested(app, client):
+    """The innermost blueprint with a provider is selected."""
+    inner = flask.Blueprint("inner", __name__)
+    inner.json_provider_class = CurrencyJSONProvider
+
+    @inner.route("/")
+    def inner_index():
+        return {"value": 1.5}
+
+    plain = flask.Blueprint("plain", __name__)
+
+    @plain.route("/")
+    def plain_index():
+        return {"value": 1.5}
+
+    outer = flask.Blueprint("outer", __name__)
+    outer.json_provider_class = CurrencyJSONProvider
+    outer.register_blueprint(inner, url_prefix="/inner")
+    outer.register_blueprint(plain, url_prefix="/plain")
+    app.register_blueprint(outer, url_prefix="/outer")
+
+    rv = client.get("/outer/inner/")
+    assert isinstance(rv.get_json()["value"], decimal.Decimal)
+    # A nested blueprint without a provider uses its parent's.
+    rv = client.get("/outer/plain/")
+    assert isinstance(rv.get_json()["value"], decimal.Decimal)
+
+
+def test_blueprint_json_provider_per_registration(app, client):
+    """The same blueprint object registered under different names can
+    use a different provider for each registration.
+    """
+    bp = flask.Blueprint("bp", __name__)
+
+    @bp.route("/")
+    def index():
+        return {"value": 1.5}
+
+    app.register_blueprint(bp, name="old", url_prefix="/old")
+    app.register_blueprint(
+        bp, name="new", url_prefix="/new", json_provider=CurrencyJSONProvider
+    )
+    app.register_blueprint(
+        bp, name="newer", url_prefix="/newer", json_provider=CurrencyJSONProvider(app)
+    )
+
+    assert isinstance(client.get("/old/").get_json()["value"], float)
+    assert isinstance(client.get("/new/").get_json()["value"], decimal.Decimal)
+    assert isinstance(client.get("/newer/").get_json()["value"], decimal.Decimal)
+
+
+def test_blueprint_json_provider_error(app, client):
+    """Error responses for a matched request use its blueprint's
+    provider. Unmatched requests use the app's provider.
+    """
+    bp = flask.Blueprint("bp", __name__)
+    bp.json_provider_class = CurrencyJSONProvider
+
+    @bp.route("/missing")
+    def bp_missing():
+        flask.abort(404)
+
+    @bp.errorhandler(404)
+    def bp_not_found(e):
+        return {"value": 1.5}, 404
+
+    @app.errorhandler(404)
+    def app_not_found(e):
+        return {"value": 1.5}, 404
+
+    app.register_blueprint(bp, url_prefix="/bp")
+
+    rv = client.get("/bp/missing")
+    assert isinstance(rv.get_json()["value"], decimal.Decimal)
+    # No route matched, the app's provider is used.
+    rv = client.get("/bp/other")
+    assert isinstance(rv.get_json()["value"], float)
+    rv = client.get("/other")
+    assert isinstance(rv.get_json()["value"], float)
+
+
+def test_blueprint_json_provider_app_context(app):
+    """Without a matched request, the app's provider is used."""
+    bp = flask.Blueprint("bp", __name__)
+    bp.json_provider_class = CurrencyJSONProvider
+    app.register_blueprint(bp)
+
+    with app.app_context():
+        rv = flask.jsonify(value=1.5)
+        assert isinstance(rv.get_json()["value"], float)
+        assert isinstance(app.json.loads("1.5"), float)
+
+
+def test_blueprint_json_provider_explicit_app_json(app, client):
+    """Explicit uses of app.json keep using the app's provider, even
+    during a blueprint request.
+    """
+    bp = flask.Blueprint("bp", __name__)
+    bp.json_provider_class = CurrencyJSONProvider
+
+    @bp.route("/response")
+    def bp_response():
+        return flask.current_app.json.response({"value": 1.5})
+
+    @bp.route("/dumps")
+    def bp_dumps():
+        return flask.json.dumps({"value": decimal.Decimal("1.5")})
+
+    app.register_blueprint(bp, url_prefix="/bp")
+
+    rv = client.get("/bp/response")
+    assert isinstance(rv.get_json()["value"], float)
+    rv = client.get("/bp/dumps")
+    assert rv.get_data(as_text=True) == '{"value": "1.5"}'

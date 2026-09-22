@@ -320,6 +320,21 @@ class Blueprint(Scaffold):
         self._got_registered_once = True
         state = self.make_setup_state(app, options, first_bp_registration)
 
+        json_provider = options.get("json_provider", _sentinel)
+
+        if json_provider is _sentinel:
+            json_provider_class = self.json_provider_class
+
+            if json_provider_class is not None:
+                json_provider = json_provider_class(app)
+            else:
+                json_provider = None
+        elif isinstance(json_provider, type):
+            json_provider = json_provider(app)
+
+        if json_provider is not None:
+            app.json_providers[name] = json_provider
+
         if self.has_static_folder:
             state.add_url_rule(
                 f"{self.static_url_path}/<path:filename>",

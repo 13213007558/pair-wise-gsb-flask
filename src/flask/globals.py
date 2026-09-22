@@ -61,6 +61,11 @@ session: SessionMixinProxy = LocalProxy(  # type: ignore[assignment]
     _cv_app, "session", unbound_message=_no_req_msg
 )
 
+# If the test client is making a request, this holds a list that the
+# app appends the response's JSON provider to, so that the client can
+# parse the response with the same provider after the request ends.
+_cv_json_provider: ContextVar[list[t.Any]] = ContextVar("flask.json_provider")
+
 
 def __getattr__(name: str) -> t.Any:
     import warnings

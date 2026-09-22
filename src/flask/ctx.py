@@ -413,6 +413,14 @@ class AppContext:
         else:
             self._request.url_rule, self._request.view_args = result  # type: ignore[union-attr]
 
+        if self._request is not None:
+            # Select the JSON provider for the matched blueprints, used by
+            # request.get_json. Falls back to the app's provider if
+            # routing did not match a blueprint with its own provider.
+            self._request.json_module = self.app._get_json_provider(
+                self._request.blueprints
+            )
+
     def push(self) -> None:
         """Push this context so that it is the active context. If this is a
         request context, calls :meth:`match_request` to perform routing with

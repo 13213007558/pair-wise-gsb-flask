@@ -339,6 +339,16 @@ class App(Scaffold):
         .. versionadded:: 2.2
         """
 
+        #: A map of registered blueprint names to the JSON provider to
+        #: use for requests handled by that blueprint. A provider is
+        #: added when a blueprint with a :attr:`json_provider_class
+        #: <flask.blueprints.Blueprint.json_provider_class>`, or a
+        #: ``json_provider`` registration option, is registered.
+        #: Requests that don't match a name here use :attr:`json`.
+        #:
+        #: .. versionadded:: 3.2
+        self.json_providers: dict[str, JSONProvider] = {}
+
         #: A list of functions that are called by
         #: :meth:`handle_url_build_error` when :meth:`.url_for` raises a
         #: :exc:`~werkzeug.routing.BuildError`. Each function is called
@@ -584,6 +594,12 @@ class App(Scaffold):
             :class:`~flask.blueprints.BlueprintSetupState`. They can be
             accessed in :meth:`~flask.Blueprint.record` callbacks.
 
+        .. versionchanged:: 3.2
+            The ``json_provider`` option can be a
+            :class:`~flask.json.provider.JSONProvider` instance or class
+            to use for requests handled by this registration, overriding
+            the blueprint's :attr:`~flask.Blueprint.json_provider_class`.
+
         .. versionchanged:: 2.0.1
             The ``name`` option can be used to change the (pre-dotted)
             name the blueprint is registered with. This allows the same
@@ -600,6 +616,24 @@ class App(Scaffold):
         .. versionadded:: 0.11
         """
         return self.blueprints.values()
+
+    def _get_json_provider(self, blueprints: list[str]) -> JSONProvider:
+        """Get the JSON provider to use for a request matching the
+        given blueprint names. The first name, which is the most deeply
+        nested, that has a provider in :attr:`json_providers` is
+        selected. Otherwise, the app's :attr:`json` provider is used.
+
+        :param blueprints: The matched blueprint names, most deeply
+            nested first. This is :attr:`request.blueprints
+            <flask.Request.blueprints>` during a request.
+
+        .. versionadded:: 3.2
+        """
+        for name in blueprints:
+            if (provider := self.json_providers.get(name)) is not None:
+                return provider
+
+        return self.json
 
     @setupmethod
     def add_url_rule(

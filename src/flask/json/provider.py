@@ -102,7 +102,13 @@ class JSONProvider:
         :param kwargs: Treat as a dict to serialize.
         """
         obj = self._prepare_response_obj(args, kwargs)
-        return self._app.response_class(self.dumps(obj), mimetype="application/json")
+        response = self._app.response_class(
+            self.dumps(obj), mimetype="application/json"
+        )
+        # Remember the provider that created the response, so that
+        # response.get_json uses it even after the request has ended.
+        response.json_module = self  # type: ignore[attr-defined]
+        return response
 
 
 def _default(o: t.Any) -> t.Any:
@@ -210,6 +216,10 @@ class DefaultJSONProvider(JSONProvider):
         else:
             dump_args.setdefault("separators", (",", ":"))
 
-        return self._app.response_class(
+        response = self._app.response_class(
             f"{self.dumps(obj, **dump_args)}\n", mimetype=self.mimetype
         )
+        # Remember the provider that created the response, so that
+        # response.get_json uses it even after the request has ended.
+        response.json_module = self  # type: ignore[attr-defined]
+        return response

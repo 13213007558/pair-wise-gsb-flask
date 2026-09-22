@@ -33,6 +33,7 @@ from . import cli
 from . import typing as ft
 from .ctx import AppContext
 from .globals import _cv_app
+from .globals import _cv_json_provider
 from .globals import app_ctx
 from .globals import g
 from .globals import request
@@ -1326,7 +1327,7 @@ class Flask(App):
                 )
                 status = headers = None
             elif isinstance(rv, (dict, list)):
-                rv = self.json.response(rv)
+                rv = self._get_json_provider(request.blueprints).response(rv)
             elif isinstance(rv, BaseResponse) or callable(rv):
                 # evaluate a WSGI callable, or coerce a different response
                 # class to the correct type
@@ -1604,6 +1605,20 @@ class Flask(App):
             except:
                 error = sys.exc_info()[1]
                 raise
+
+            if (json_providers := _cv_json_provider.get(None)) is not None:
+                # The test client is waiting to parse the response.
+                # Record the JSON provider that created the response,
+                # so it can use the same one after the request ends. A
+                # response created by a provider is already marked,
+                # otherwise use the provider selected for the request.
+                json_provider = getattr(response, "__dict__", {}).get("json_module")
+
+                if json_provider is None:
+                    json_provider = ctx.request.json_module
+
+                json_providers.append(json_provider)
+
             return response(environ, start_response)
         finally:
             if "werkzeug.debug.preserve_context" in environ:

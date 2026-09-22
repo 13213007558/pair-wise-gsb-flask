@@ -15,6 +15,7 @@ from werkzeug.test import Client
 from werkzeug.wrappers import Request as BaseRequest
 
 from .cli import ScriptInfo
+from .globals import _cv_json_provider
 from .sessions import SessionMixin
 
 if t.TYPE_CHECKING:  # pragma: no cover
@@ -232,12 +233,33 @@ class FlaskClient(Client):
         # within a single block.
         self._context_stack.close()
 
-        response = super().open(
-            request,
-            buffered=buffered,
-            follow_redirects=follow_redirects,
-        )
-        response.json_module = self.application.json  # type: ignore[assignment]
+        # The app records the JSON provider that created each response
+        # in this list, so that get_json on the returned response uses
+        # the same provider even though the request has ended.
+        # Following redirects nests this method, so reuse the outer
+        # list if there is one. The last recorded provider corresponds
+        # to the final response.
+        json_providers = _cv_json_provider.get(None)
+        json_provider_token = None
+
+        if json_providers is None:
+            json_providers = []
+            json_provider_token = _cv_json_provider.set(json_providers)
+
+        try:
+            response = super().open(
+                request,
+                buffered=buffered,
+                follow_redirects=follow_redirects,
+            )
+        finally:
+            if json_provider_token is not None:
+                _cv_json_provider.reset(json_provider_token)
+
+        if json_providers:
+            response.json_module = json_providers[-1]
+        else:
+            response.json_module = self.application.json  # type: ignore[assignment]
 
         # Re-push contexts that were preserved during the request.
         for cm in self._new_contexts:
