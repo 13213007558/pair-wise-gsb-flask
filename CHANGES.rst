@@ -30,6 +30,12 @@ Unreleased
     of only lower case file extensions. :pr:`6012`
 -   Fix parsing IPv6 with port in ``run`` and the test client. :pr:`6096`
 -   Add ``app.query`` route decorator for the HTTP QUERY method.
+-   Add ``group_errorhandler`` and ``register_group_error_handler`` to
+    register handlers for an ``ExceptionGroup`` raised while handling a
+    request, for example from an ``asyncio.TaskGroup``. A group handler is
+    used if every leaf exception in the group matches its registered
+    class, and receives the original group with its nested structure and
+    tracebacks intact. Requires Python 3.11+.
 
 
 Version 3.1.3

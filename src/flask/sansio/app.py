@@ -56,6 +56,34 @@ def _make_timedelta(value: timedelta | int | None) -> timedelta | None:
     return timedelta(seconds=value)
 
 
+if sys.version_info >= (3, 11):
+    _exception_group_classes: tuple[type[BaseException], ...] = (
+        BaseExceptionGroup,  # noqa: F821
+    )
+else:
+    # Python 3.10 does not have exception groups. The framework still
+    # imports, but group handlers can neither be registered nor matched.
+    _exception_group_classes = ()
+
+
+def _exception_group_leaves(group: BaseException) -> list[BaseException]:
+    """Recursively collect the non-group leaf exceptions of an
+    exception group, preserving the group itself unchanged.
+    """
+    leaves: list[BaseException] = []
+    stack = [group]
+
+    while stack:
+        exc = stack.pop()
+
+        if isinstance(exc, _exception_group_classes):
+            stack.extend(exc.exceptions)  # type: ignore[union-attr]
+        else:
+            leaves.append(exc)
+
+    return leaves
+
+
 class App(Scaffold):
     """The flask object implements a WSGI application and acts as the central
     object.  It is passed the name of the module or package of the
@@ -888,6 +916,70 @@ class App(Scaffold):
 
                     if handler is not None:
                         return handler
+        return None
+
+    def _find_group_error_handler(
+        self, e: BaseException, blueprints: list[str]
+    ) -> ft.ErrorHandlerCallable | None:
+        """Return a registered exception group handler for an
+        exception group, or ``None`` if no handler matches. Returns
+        ``None`` immediately for non-group exceptions, and on Python
+        versions without exception groups.
+
+        A handler is only eligible if every leaf of the group is an
+        instance of its registered class. Blueprint handlers are
+        considered before app handlers. Within one level, the handler
+        for the most specific class wins. Raises :exc:`RuntimeError`
+        if multiple eligible handlers at the same level are not
+        related by inheritance.
+
+        .. versionadded:: 3.2
+        """
+        if not _exception_group_classes or not isinstance(e, _exception_group_classes):
+            return None
+
+        leaves = _exception_group_leaves(e)
+
+        # A group containing non-Exception leaves, such as
+        # KeyboardInterrupt, must not be converted into a response.
+        if any(not isinstance(leaf, Exception) for leaf in leaves):
+            return None
+
+        for name in (*blueprints, None):
+            handler_map = self.group_error_handler_spec[name]
+
+            if not handler_map:
+                continue
+
+            candidates = [
+                cls
+                for cls in handler_map
+                if all(isinstance(leaf, cls) for leaf in leaves)
+            ]
+
+            if not candidates:
+                continue
+
+            most_specific = [
+                cls
+                for cls in candidates
+                if not any(
+                    other is not cls and issubclass(other, cls) for other in candidates
+                )
+            ]
+
+            if len(most_specific) > 1:
+                names = ", ".join(sorted(cls.__name__ for cls in most_specific))
+                raise RuntimeError(
+                    f"Ambiguous exception group handlers: {names} each"
+                    f" match every leaf of {type(e).__name__!r}, but"
+                    " their classes are not related by inheritance."
+                    " Register a single more specific handler, or make"
+                    " the classes related by inheritance."
+                )
+
+            return handler_map[most_specific[0]]
+
         return None
 
     def trap_http_exception(self, e: Exception) -> bool:

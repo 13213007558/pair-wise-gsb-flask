@@ -396,6 +396,10 @@ class Blueprint(Scaffold):
             )
             app.error_handler_spec[key] = value
 
+        for key, value in self.group_error_handler_spec.items():
+            key = name if key is None else f"{name}.{key}"
+            app.group_error_handler_spec[key] = dict(value)
+
         for endpoint, func in self.view_functions.items():
             app.view_functions[endpoint] = func
 
@@ -663,6 +667,26 @@ class Blueprint(Scaffold):
         def decorator(f: T_error_handler) -> T_error_handler:
             def from_blueprint(state: BlueprintSetupState) -> None:
                 state.app.errorhandler(code)(f)
+
+            self.record_once(from_blueprint)
+            return f
+
+        return decorator
+
+    @setupmethod
+    def app_group_errorhandler(
+        self, leaf_exception_class: type[Exception]
+    ) -> t.Callable[[T_error_handler], T_error_handler]:
+        """Like :meth:`.Scaffold.group_errorhandler`, but for every
+        request, not only those handled by the blueprint. Equivalent to
+        :meth:`.Flask.group_errorhandler`.
+
+        .. versionadded:: 3.2
+        """
+
+        def decorator(f: T_error_handler) -> T_error_handler:
+            def from_blueprint(state: BlueprintSetupState) -> None:
+                state.app.group_errorhandler(leaf_exception_class)(f)
 
             self.record_once(from_blueprint)
             return f

@@ -255,6 +255,47 @@ for "500 Internal Server Error" will not be used. Instead, the
 interactive debugger will be shown.
 
 
+Exception Groups
+-----------------
+
+Python 3.11 added :exc:`ExceptionGroup`, which libraries such as
+:class:`asyncio.TaskGroup` use to raise multiple errors at once. A
+handler registered with :meth:`~flask.Flask.errorhandler` does not
+unwrap groups, it can only match the group type itself. To handle a
+group based on the leaf exceptions it contains, register a separate
+group handler with :meth:`~flask.Flask.group_errorhandler`.
+
+.. code-block:: python
+
+    @app.group_errorhandler(DatabaseError)
+    def handle_database_group(group):
+        # group is the original ExceptionGroup, with its nested
+        # structure and tracebacks intact
+        count = len(group.exceptions)
+        return f"{count} database operations failed", 500
+
+A group handler declares the leaf exception class it accepts. It is
+only used if *every* leaf of the group, including leaves of nested
+groups, is an instance of that class. If multiple group handlers could
+handle a group, blueprint handlers are considered before app handlers,
+and within one level the handler for the most specific class wins. If
+two handlers at the same level match but their classes are not related
+by inheritance, a ``RuntimeError`` is raised to report the ambiguity
+rather than picking one arbitrarily.
+
+Groups that no group handler matches follow the regular unhandled
+error path described above. Groups containing :exc:`BaseException`
+leaves, such as :exc:`KeyboardInterrupt`, are never converted to a
+response.
+
+Group handlers can also be registered on blueprints with
+:meth:`flask.Blueprint.group_errorhandler`, or for every request with
+:meth:`flask.Blueprint.app_group_errorhandler`. Registering a group
+handler requires Python 3.11 or later.
+
+.. versionadded:: 3.2
+
+
 Custom Error Pages
 ------------------
 
