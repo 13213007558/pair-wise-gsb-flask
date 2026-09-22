@@ -262,6 +262,37 @@ the correct templates enable the ``EXPLAIN_TEMPLATE_LOADING`` config
 variable which will instruct Flask to print out the steps it goes through
 to locate templates on every ``render_template`` call.
 
+Template Namespaces
+'''''''''''''''''''
+
+.. versionadded:: 3.2
+
+A template can also be loaded from a specific blueprint by prefixing the
+name with the blueprint's registered name and ``::``::
+
+    render_template("admin::index.html")
+
+The registered name is the key in :attr:`Flask.blueprints`, so a nested
+blueprint is addressed by its dotted name (``"admin.report::index.html"``)
+and a blueprint that is registered multiple times is addressed by each
+registration name.
+
+Within a template loaded through a namespace, ``{% extends %}``,
+``{% include %}``, and ``{% import %}`` references without a qualifier
+resolve within the same namespace. Use an explicit qualifier to reference
+a template from another namespace, for example
+``{% include "shop::_card.html" %}``.
+
+The application can override a namespaced template by placing a file at
+``templates/overrides/<name>/<path>``. For example,
+``templates/overrides/admin/index.html`` overrides ``admin::index.html``.
+Unqualified references inside the override still resolve within the
+overridden blueprint's namespace.
+
+Names without the ``::`` qualifier keep the regular lookup order described
+above: the application's template folder first, then each blueprint in
+registration order.
+
 Building URLs
 -------------
 

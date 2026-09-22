@@ -128,6 +128,7 @@ def explain_template_loading_attempts(
         tuple[
             BaseLoader,
             Scaffold,
+            str,
             tuple[str, str | None, t.Callable[[], bool] | None] | None,
         ]
     ],
@@ -140,7 +141,7 @@ def explain_template_loading_attempts(
     if (ctx := _cv_app.get(None)) is not None and ctx.has_request:
         blueprint = ctx.request.blueprint
 
-    for idx, (loader, srcobj, triple) in enumerate(attempts):
+    for idx, (loader, srcobj, name, triple) in enumerate(attempts):
         if isinstance(srcobj, App):
             src_info = f"application {srcobj.import_name!r}"
         elif isinstance(srcobj, Blueprint):
@@ -149,6 +150,9 @@ def explain_template_loading_attempts(
             src_info = repr(srcobj)
 
         info.append(f"{idx + 1:5}: trying loader of {src_info}")
+
+        if name != template:
+            info.append(f"       looking up {name!r}")
 
         for line in _dump_loader_info(loader):
             info.append(f"       {line}")

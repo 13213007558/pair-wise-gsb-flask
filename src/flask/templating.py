@@ -17,6 +17,14 @@ if t.TYPE_CHECKING:  # pragma: no cover
     from .sansio.app import App
     from .sansio.scaffold import Scaffold
 
+#: Separator between a blueprint's registered name and the template path in
+#: an explicitly namespaced template name, such as ``"admin::index.html"``.
+TEMPLATE_NAMESPACE_SEPARATOR = "::"
+
+#: Prefix within the application's template folder where per-blueprint
+#: overrides live, for example ``templates/overrides/admin/index.html``.
+TEMPLATE_OVERRIDE_PREFIX = "overrides"
+
 
 def _default_template_ctx_processor() -> dict[str, t.Any]:
     """Default template context processor.  Replaces the ``request`` and ``g``
@@ -45,10 +53,39 @@ class Environment(BaseEnvironment):
         BaseEnvironment.__init__(self, **options)
         self.app = app
 
+    def join_path(self, template: str, parent: str) -> str:
+        """Resolve a template name referenced from ``parent``.
+
+        If ``parent`` was loaded through a template namespace such as
+        ``"report::page.html"``, an unqualified reference is resolved
+        within the same namespace. An already qualified reference is used
+        as-is, allowing an explicit jump to another namespace. Unqualified
+        names with an unqualified parent keep the default global lookup.
+
+        .. versionadded:: 3.2
+        """
+        if TEMPLATE_NAMESPACE_SEPARATOR in template:
+            return template
+
+        namespace, sep, _ = parent.partition(TEMPLATE_NAMESPACE_SEPARATOR)
+
+        if sep:
+            return f"{namespace}{sep}{template}"
+
+        return template
+
 
 class DispatchingJinjaLoader(BaseLoader):
     """A loader that looks for templates in the application and all
     the blueprint folders.
+
+    A template name may be qualified with a blueprint's registered name
+    using the syntax ``"name::path/to/template"``. In that case only the
+    application's override folder
+    (``templates/overrides/<name>/<path>``) and that blueprint's own
+    template folder are searched. Unqualified names keep the historical
+    behavior: the application first, then every blueprint in
+    registration order.
     """
 
     def __init__(self, app: App) -> None:
@@ -68,14 +105,14 @@ class DispatchingJinjaLoader(BaseLoader):
         rv: tuple[str, str | None, t.Callable[[], bool] | None] | None
         trv: None | (tuple[str, str | None, t.Callable[[], bool] | None]) = None
 
-        for srcobj, loader in self._iter_loaders(template):
+        for srcobj, loader, name in self._iter_loaders(template):
             try:
-                rv = loader.get_source(environment, template)
+                rv = loader.get_source(environment, name)
                 if trv is None:
                     trv = rv
             except TemplateNotFound:
                 rv = None
-            attempts.append((loader, srcobj, rv))
+            attempts.append((loader, srcobj, name, rv))
 
         from .debughelpers import explain_template_loading_attempts
 
@@ -88,34 +125,72 @@ class DispatchingJinjaLoader(BaseLoader):
     def _get_source_fast(
         self, environment: BaseEnvironment, template: str
     ) -> tuple[str, str | None, t.Callable[[], bool] | None]:
-        for _srcobj, loader in self._iter_loaders(template):
+        for _srcobj, loader, name in self._iter_loaders(template):
             try:
-                return loader.get_source(environment, template)
+                return loader.get_source(environment, name)
             except TemplateNotFound:
                 continue
         raise TemplateNotFound(template)
 
-    def _iter_loaders(self, template: str) -> t.Iterator[tuple[Scaffold, BaseLoader]]:
+    def _iter_loaders(
+        self, template: str
+    ) -> t.Iterator[tuple[Scaffold, BaseLoader, str]]:
+        """Yield ``(source, loader, name)`` triples to try, in order.
+
+        ``name`` is the template name to pass to that loader, which may
+        differ from the requested ``template`` for namespaced lookups.
+        """
+        namespace, sep, path = template.partition(TEMPLATE_NAMESPACE_SEPARATOR)
+
+        if sep:
+            blueprint = self.app.blueprints.get(namespace)
+
+            if blueprint is None:
+                return
+
+            loader = self.app.jinja_loader
+            if loader is not None:
+                override = "/".join((TEMPLATE_OVERRIDE_PREFIX, namespace, path))
+                yield self.app, loader, override
+
+            loader = blueprint.jinja_loader
+            if loader is not None:
+                yield blueprint, loader, path
+
+            return
+
         loader = self.app.jinja_loader
         if loader is not None:
-            yield self.app, loader
+            yield self.app, loader, template
 
         for blueprint in self.app.iter_blueprints():
             loader = blueprint.jinja_loader
             if loader is not None:
-                yield blueprint, loader
+                yield blueprint, loader, template
 
     def list_templates(self) -> list[str]:
         result = set()
+        app_templates: set[str] = set()
         loader = self.app.jinja_loader
         if loader is not None:
-            result.update(loader.list_templates())
+            app_templates = set(loader.list_templates())
+            result.update(app_templates)
 
-        for blueprint in self.app.iter_blueprints():
+        for name, blueprint in self.app.blueprints.items():
             loader = blueprint.jinja_loader
             if loader is not None:
                 for template in loader.list_templates():
                     result.add(template)
+                    result.add(f"{name}{TEMPLATE_NAMESPACE_SEPARATOR}{template}")
+
+        override_prefix = f"{TEMPLATE_OVERRIDE_PREFIX}/"
+
+        for template in app_templates:
+            if template.startswith(override_prefix):
+                namespace, _, path = template[len(override_prefix) :].partition("/")
+
+                if path and namespace in self.app.blueprints:
+                    result.add(f"{namespace}{TEMPLATE_NAMESPACE_SEPARATOR}{path}")
 
         return list(result)
 
