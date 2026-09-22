@@ -1,7 +1,9 @@
 import logging
+import os
 
 import pytest
 import werkzeug.serving
+from jinja2 import FileSystemBytecodeCache
 from jinja2 import TemplateNotFound
 from markupsafe import Markup
 
@@ -530,3 +532,214 @@ def test_custom_jinja_env():
 
     app = CustomFlask(__name__)
     assert isinstance(app.jinja_env, CustomEnvironment)
+
+
+def _make_plugin(tmp_path, name, layout, page, partial):
+    """Create a blueprint with its own template folder in tmp_path."""
+    folder = tmp_path / name
+    folder.mkdir()
+    (folder / "layout.html").write_text(layout)
+    (folder / "page.html").write_text(page)
+    (folder / "partial.html").write_text(partial)
+    return flask.Blueprint(name, __name__, template_folder=str(folder))
+
+
+@pytest.fixture
+def plugin_app(tmp_path):
+    """An app with two plugins that have same-named but different
+    templates. Each page adds one level of inheritance and one include.
+    """
+    app = flask.Flask(__name__, template_folder=str(tmp_path / "app_templates"))
+    (tmp_path / "app_templates").mkdir()
+    report = _make_plugin(
+        tmp_path,
+        "report",
+        "[report-layout]{% block body %}{% endblock %}",
+        '{% extends "layout.html" %}{% block body %}'
+        'report-page|{% include "partial.html" %}'
+        '|{% include "analytics::partial.html" %}{% endblock %}',
+        "report-partial",
+    )
+    analytics = _make_plugin(
+        tmp_path,
+        "analytics",
+        "[analytics-layout]{% block body %}{% endblock %}",
+        '{% extends "layout.html" %}{% block body %}'
+        'analytics-page|{% include "partial.html" %}{% endblock %}',
+        "analytics-partial",
+    )
+    app.register_blueprint(report)
+    app.register_blueprint(analytics)
+    return app
+
+
+def test_namespaced_templates_interleaved(plugin_app):
+    """Each plugin renders its own layout and partial. Warm the cache,
+    then interleave renders to check the cache identity does not leak
+    across namespaces.
+    """
+    expected = {
+        "report::page.html": (
+            "[report-layout]report-page|report-partial|analytics-partial"
+        ),
+        "analytics::page.html": ("[analytics-layout]analytics-page|analytics-partial"),
+    }
+
+    with plugin_app.app_context():
+        for name, expected_out in expected.items():
+            assert flask.render_template(name) == expected_out
+
+        for _ in range(3):
+            for name, expected_out in expected.items():
+                assert flask.render_template(name) == expected_out
+
+
+def test_namespaced_template_override(plugin_app, tmp_path):
+    """templates/overrides/<name>/... in the app overrides the plugin's
+    template. The override's relative dependencies still resolve in the
+    plugin's namespace.
+    """
+    override_dir = tmp_path / "app_templates" / "overrides" / "report"
+    override_dir.mkdir(parents=True)
+    (override_dir / "page.html").write_text(
+        '{% extends "layout.html" %}{% block body %}'
+        'override|{% include "partial.html" %}{% endblock %}'
+    )
+
+    with plugin_app.app_context():
+        assert (
+            flask.render_template("report::page.html")
+            == "[report-layout]override|report-partial"
+        )
+        # The other plugin is not affected by the override.
+        assert (
+            flask.render_template("analytics::page.html")
+            == "[analytics-layout]analytics-page|analytics-partial"
+        )
+
+
+def test_namespaced_nested_and_multiple_registration(plugin_app, tmp_path):
+    """Nested registration names and multiple registrations of one
+    blueprint are distinct namespaces.
+    """
+    extra = _make_plugin(
+        tmp_path,
+        "extra",
+        "[extra-layout]{% block body %}{% endblock %}",
+        '{% extends "layout.html" %}{% block body %}extra-page{% endblock %}',
+        "extra-partial",
+    )
+    admin = flask.Blueprint("admin", __name__)
+    admin.register_blueprint(extra)
+    plugin_app.register_blueprint(admin)
+    plugin_app.register_blueprint(extra, name="extra2")
+
+    with plugin_app.app_context():
+        assert (
+            flask.render_template("admin.extra::page.html")
+            == "[extra-layout]extra-page"
+        )
+        assert flask.render_template("extra2::page.html") == "[extra-layout]extra-page"
+        # The nested registration is not visible under the bare inner name.
+        with pytest.raises(TemplateNotFound):
+            flask.render_template("extra::page.html")
+
+
+def test_namespaced_template_unknown_namespace(plugin_app):
+    with plugin_app.app_context(), pytest.raises(TemplateNotFound):
+        flask.render_template("unknown::page.html")
+
+
+def test_bare_template_lookup_unchanged(plugin_app, tmp_path):
+    """Bare names keep the previous lookup order: app first, then
+    blueprints in registration order.
+    """
+    with plugin_app.app_context():
+        # The app has no page.html, so the first registered plugin wins.
+        assert (
+            flask.render_template("page.html")
+            == "[report-layout]report-page|report-partial|analytics-partial"
+        )
+
+    # An app template with the same bare name still takes precedence.
+    (tmp_path / "app_templates" / "page.html").write_text("app-page")
+    plugin_app.jinja_env.cache.clear()
+
+    with plugin_app.app_context():
+        assert flask.render_template("page.html") == "app-page"
+
+
+def test_namespaced_template_caches(plugin_app, tmp_path):
+    """Template cache, bytecode cache, and auto-reload use identities
+    that do not conflict across namespaces.
+    """
+    (tmp_path / "bytecode").mkdir()
+    plugin_app.jinja_env.bytecode_cache = FileSystemBytecodeCache(
+        str(tmp_path / "bytecode")
+    )
+    plugin_app.jinja_env.auto_reload = True
+
+    with plugin_app.app_context():
+        assert flask.render_template("report::page.html").startswith("[report-layout]")
+        assert flask.render_template("analytics::page.html").startswith(
+            "[analytics-layout]"
+        )
+
+    assert os.listdir(tmp_path / "bytecode")
+
+    # Modify only one plugin's page. Auto-reload must pick up the change
+    # for that namespace only.
+    page = tmp_path / "report" / "page.html"
+    page.write_text(
+        '{% extends "layout.html" %}{% block body %}report-v2{% endblock %}'
+    )
+    mtime = os.stat(page).st_mtime + 10
+    os.utime(page, (mtime, mtime))
+
+    with plugin_app.app_context():
+        assert flask.render_template("report::page.html") == "[report-layout]report-v2"
+        assert (
+            flask.render_template("analytics::page.html")
+            == "[analytics-layout]analytics-page|analytics-partial"
+        )
+
+
+def test_namespaced_explain_template_loading(plugin_app, monkeypatch):
+    """Toggling EXPLAIN_TEMPLATE_LOADING does not change which template
+    is selected, and a failed lookup shows the searched namespaces.
+    """
+    records = []
+
+    class _Handler(logging.Handler):
+        def handle(self, record):
+            records.append(str(record.msg))
+
+    logger = logging.getLogger(plugin_app.name)
+    monkeypatch.setattr(logger, "handlers", [_Handler()])
+    monkeypatch.setattr(logger, "level", logging.INFO)
+
+    for explain in (False, True):
+        monkeypatch.setitem(plugin_app.config, "EXPLAIN_TEMPLATE_LOADING", explain)
+
+        with plugin_app.app_context():
+            assert flask.render_template("report::page.html") == (
+                "[report-layout]report-page|report-partial|analytics-partial"
+            )
+
+    with (
+        plugin_app.app_context(),
+        pytest.raises(TemplateNotFound, match="report::missing.html"),
+    ):
+        flask.render_template("report::missing.html")
+
+    text = "\n".join(records)
+    assert "Locating template 'report::missing.html':" in text
+    assert "application override for namespace 'report'" in text
+    assert "trying loader of blueprint 'report'" in text
+
+
+def test_list_templates_namespaced(plugin_app):
+    templates = plugin_app.jinja_env.loader.list_templates()
+    assert "report::page.html" in templates
+    assert "report::layout.html" in templates
+    assert "analytics::page.html" in templates

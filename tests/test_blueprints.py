@@ -236,7 +236,12 @@ def test_templates_list(test_apps):
     from blueprintapp import app
 
     templates = sorted(app.jinja_env.list_templates())
-    assert templates == ["admin/index.html", "frontend/index.html"]
+    assert templates == [
+        "admin/index.html",
+        "admin::admin/index.html",
+        "frontend/index.html",
+        "frontend::frontend/index.html",
+    ]
 
 
 def test_dotted_name_not_allowed(app, client):

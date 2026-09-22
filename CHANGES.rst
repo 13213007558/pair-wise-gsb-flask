@@ -28,6 +28,11 @@ Unreleased
     it's disabled in config. Previously, only disabling worked. :issue:`5916`
 -   ``Flask.select_jinja_autoescape`` uses case-insensitive comparison instead
     of only lower case file extensions. :pr:`6012`
+-   Blueprint templates can be addressed with an explicit namespace,
+    ``"name::template"``, where ``name`` is the blueprint's registered name.
+    Relative ``extends``, ``include``, and ``import`` references resolve within
+    the same namespace, and the application can override a blueprint's
+    namespaced templates in ``templates/overrides/<name>/``.
 -   Fix parsing IPv6 with port in ``run`` and the test client. :pr:`6096`
 -   Add ``app.query`` route decorator for the HTTP QUERY method.
 

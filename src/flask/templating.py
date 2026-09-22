@@ -18,6 +18,16 @@ if t.TYPE_CHECKING:  # pragma: no cover
     from .sansio.scaffold import Scaffold
 
 
+#: Separates the blueprint namespace from the template name in an
+#: explicitly namespaced template name, such as "report::page.html".
+_namespace_separator = "::"
+
+#: Prefix within the application's template folder that is searched first
+#: when resolving a namespaced template, allowing the application to
+#: override a blueprint's templates.
+_override_prefix = "overrides"
+
+
 def _default_template_ctx_processor() -> dict[str, t.Any]:
     """Default template context processor.  Replaces the ``request`` and ``g``
     proxies with their concrete objects for faster access.
@@ -45,6 +55,21 @@ class Environment(BaseEnvironment):
         BaseEnvironment.__init__(self, **options)
         self.app = app
 
+    def join_path(self, template: str, parent: str) -> str:
+        """Resolve a template referenced by the "parent" template. If the
+        parent was loaded from a blueprint namespace ("name::template"), an
+        unqualified reference is resolved within the same namespace. A
+        reference that already contains "::" is used unchanged, so a
+        template can explicitly jump to another namespace.
+
+        .. versionadded:: 3.2
+        """
+        if _namespace_separator in template or _namespace_separator not in parent:
+            return template
+
+        namespace = parent.partition(_namespace_separator)[0]
+        return f"{namespace}{_namespace_separator}{template}"
+
 
 class DispatchingJinjaLoader(BaseLoader):
     """A loader that looks for templates in the application and all
@@ -68,9 +93,9 @@ class DispatchingJinjaLoader(BaseLoader):
         rv: tuple[str, str | None, t.Callable[[], bool] | None] | None
         trv: None | (tuple[str, str | None, t.Callable[[], bool] | None]) = None
 
-        for srcobj, loader in self._iter_loaders(template):
+        for srcobj, loader, name in self._iter_loaders(template):
             try:
-                rv = loader.get_source(environment, template)
+                rv = loader.get_source(environment, name)
                 if trv is None:
                     trv = rv
             except TemplateNotFound:
@@ -88,22 +113,61 @@ class DispatchingJinjaLoader(BaseLoader):
     def _get_source_fast(
         self, environment: BaseEnvironment, template: str
     ) -> tuple[str, str | None, t.Callable[[], bool] | None]:
-        for _srcobj, loader in self._iter_loaders(template):
+        for _srcobj, loader, name in self._iter_loaders(template):
             try:
-                return loader.get_source(environment, template)
+                return loader.get_source(environment, name)
             except TemplateNotFound:
                 continue
         raise TemplateNotFound(template)
 
-    def _iter_loaders(self, template: str) -> t.Iterator[tuple[Scaffold, BaseLoader]]:
+    def _iter_loaders(
+        self, template: str
+    ) -> t.Iterator[tuple[Scaffold | str, BaseLoader, str]]:
+        """Yield "(srcobj, loader, name)" for each loader to try, in
+        order. "name" is the template name to pass to that loader, which
+        may differ from "template" for namespaced lookups.
+        """
+        namespace, sep, name = template.partition(_namespace_separator)
+
+        if sep:
+            yield from self._iter_namespaced_loaders(namespace, name)
+            return
+
         loader = self.app.jinja_loader
         if loader is not None:
-            yield self.app, loader
+            yield self.app, loader, template
 
         for blueprint in self.app.iter_blueprints():
             loader = blueprint.jinja_loader
             if loader is not None:
-                yield blueprint, loader
+                yield blueprint, loader, template
+
+    def _iter_namespaced_loaders(
+        self, namespace: str, name: str
+    ) -> t.Iterator[tuple[Scaffold | str, BaseLoader, str]]:
+        """Yield the loaders for a "namespace::name" template. The
+        application's override folder is searched first, then the
+        blueprint registered under "namespace". The namespace is the
+        blueprint's full registered name, so nested registrations such as
+        "admin.report" and multiple registrations of one blueprint are
+        distinct namespaces.
+        """
+        loader = self.app.jinja_loader
+
+        if loader is not None:
+            yield (
+                f"application override for namespace {namespace!r}",
+                loader,
+                f"{_override_prefix}/{namespace}/{name}",
+            )
+
+        blueprint = self.app.blueprints.get(namespace)
+
+        if blueprint is not None:
+            loader = blueprint.jinja_loader
+
+            if loader is not None:
+                yield blueprint, loader, name
 
     def list_templates(self) -> list[str]:
         result = set()
@@ -111,11 +175,12 @@ class DispatchingJinjaLoader(BaseLoader):
         if loader is not None:
             result.update(loader.list_templates())
 
-        for blueprint in self.app.iter_blueprints():
+        for name, blueprint in self.app.blueprints.items():
             loader = blueprint.jinja_loader
             if loader is not None:
                 for template in loader.list_templates():
                     result.add(template)
+                    result.add(f"{name}{_namespace_separator}{template}")
 
         return list(result)
 
