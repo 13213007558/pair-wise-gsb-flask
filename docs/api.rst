@@ -249,6 +249,9 @@ HTML ``<script>`` tags.
 
 .. autofunction:: load
 
+.. autoclass:: flask.json_seq.JsonSeqError
+    :members:
+
 .. autoclass:: flask.json.provider.JSONProvider
     :members:
     :member-order: bysource

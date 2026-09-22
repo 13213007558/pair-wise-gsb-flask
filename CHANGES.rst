@@ -3,6 +3,12 @@ Version 3.2.0
 
 Unreleased
 
+-   Add ``Request.iter_json_seq`` to incrementally parse
+    ``application/json-seq`` (RFC 7464) request bodies. Records are
+    yielded as they arrive, bad records can be skipped with an error
+    callback, and the iterator takes exclusive ownership of the input
+    stream.
+
 -   Drop support for Python 3.9. :pr:`5730`
 -   Remove previously deprecated code: ``__version__``. :pr:`5648`
 -   ``RequestContext`` has merged with ``AppContext``. ``RequestContext`` is now
