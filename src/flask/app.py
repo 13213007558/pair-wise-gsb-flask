@@ -42,6 +42,7 @@ from .helpers import get_debug_flag
 from .helpers import get_flashed_messages
 from .helpers import get_load_dotenv
 from .helpers import send_from_directory
+from .json.provider import _get_current_provider
 from .sansio.app import App
 from .sessions import SecureCookieSessionInterface
 from .sessions import SessionInterface
@@ -1326,7 +1327,7 @@ class Flask(App):
                 )
                 status = headers = None
             elif isinstance(rv, (dict, list)):
-                rv = self.json.response(rv)
+                rv = _get_current_provider().response(rv)
             elif isinstance(rv, BaseResponse) or callable(rv):
                 # evaluate a WSGI callable, or coerce a different response
                 # class to the correct type

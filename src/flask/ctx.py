@@ -11,6 +11,7 @@ from werkzeug.routing import MapAdapter
 from . import typing as ft
 from .globals import _cv_app
 from .helpers import _CollectErrors
+from .json.provider import _get_current_provider
 from .signals import appcontext_popped
 from .signals import appcontext_pushed
 
@@ -412,6 +413,7 @@ class AppContext:
             self._request.routing_exception = e  # type: ignore[union-attr]
         else:
             self._request.url_rule, self._request.view_args = result  # type: ignore[union-attr]
+            self._request.json_module = _get_current_provider()  # type: ignore[union-attr]
 
     def push(self) -> None:
         """Push this context so that it is the active context. If this is a

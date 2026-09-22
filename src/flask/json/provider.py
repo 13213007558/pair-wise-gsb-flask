@@ -10,10 +10,37 @@ from datetime import date
 
 from werkzeug.http import http_date
 
+from ..globals import _cv_app
+from ..globals import current_app
+
 if t.TYPE_CHECKING:  # pragma: no cover
     from werkzeug.sansio.response import Response
 
     from ..sansio.app import App
+
+
+def _get_current_provider() -> JSONProvider:
+    """Get the JSON provider that applies in the current context.
+
+    If a request is active and its URL matched, the innermost matched
+    blueprint that was registered with a ``json_provider_class``
+    supplies the provider. Otherwise, the app's
+    :attr:`~flask.Flask.json` provider is used.
+
+    This requires an active application context.
+
+    .. versionadded:: 3.2
+    """
+    app = current_app._get_current_object()
+
+    if (ctx := _cv_app.get(None)) is not None and ctx.has_request:
+        for name in ctx.request.blueprints:
+            provider = app._blueprint_json_providers.get(name)
+
+            if provider is not None:
+                return provider
+
+    return app.json
 
 
 class JSONProvider:
@@ -102,7 +129,11 @@ class JSONProvider:
         :param kwargs: Treat as a dict to serialize.
         """
         obj = self._prepare_response_obj(args, kwargs)
-        return self._app.response_class(self.dumps(obj), mimetype="application/json")
+        response = self._app.response_class(
+            self.dumps(obj), mimetype="application/json"
+        )
+        response._json_provider = self  # type: ignore[attr-defined]
+        return response
 
 
 def _default(o: t.Any) -> t.Any:
@@ -210,6 +241,8 @@ class DefaultJSONProvider(JSONProvider):
         else:
             dump_args.setdefault("separators", (",", ":"))
 
-        return self._app.response_class(
+        response = self._app.response_class(
             f"{self.dumps(obj, **dump_args)}\n", mimetype=self.mimetype
         )
+        response._json_provider = self  # type: ignore[attr-defined]
+        return response

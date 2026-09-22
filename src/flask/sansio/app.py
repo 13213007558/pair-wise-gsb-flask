@@ -336,6 +336,10 @@ class App(Scaffold):
         uses Python's built-in :mod:`json` library. A different provider
         can use a different JSON library.
 
+        .. versionchanged:: 3.2
+            Blueprints can use a different provider for their requests
+            by setting :attr:`~flask.Blueprint.json_provider_class`.
+
         .. versionadded:: 2.2
         """
 
@@ -372,6 +376,13 @@ class App(Scaffold):
         #:
         #: .. versionadded:: 0.7
         self.blueprints: dict[str, Blueprint] = {}
+
+        #: Maps registered blueprint names to the JSON provider that
+        #: should be used for requests matching that blueprint, if the
+        #: blueprint was registered with a ``json_provider_class``.
+        #:
+        #: .. versionadded:: 3.2
+        self._blueprint_json_providers: dict[str, JSONProvider] = {}
 
         #: a place where extensions can store application specific state.  For
         #: example this is where an extension could store database engines and
@@ -580,9 +591,19 @@ class App(Scaffold):
         :param subdomain: Blueprint routes will match on this subdomain.
         :param url_defaults: Blueprint routes will use these default values for
             view arguments.
+        :param json_provider_class: A
+            :class:`~flask.json.provider.JSONProvider` subclass to use
+            for requests matching this blueprint's routes, instead of
+            the application's :attr:`json` provider. Overrides
+            :attr:`~flask.Blueprint.json_provider_class` for this
+            registration.
         :param options: Additional keyword arguments are passed to
             :class:`~flask.blueprints.BlueprintSetupState`. They can be
             accessed in :meth:`~flask.Blueprint.record` callbacks.
+
+        .. versionchanged:: 3.2
+            The ``json_provider_class`` option can be used to set a JSON
+            provider for the blueprint's requests.
 
         .. versionchanged:: 2.0.1
             The ``name`` option can be used to change the (pre-dotted)

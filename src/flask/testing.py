@@ -16,12 +16,14 @@ from werkzeug.wrappers import Request as BaseRequest
 
 from .cli import ScriptInfo
 from .sessions import SessionMixin
+from .signals import request_finished
 
 if t.TYPE_CHECKING:  # pragma: no cover
     from _typeshed.wsgi import WSGIEnvironment
     from werkzeug.test import TestResponse
 
     from .app import Flask
+    from .wrappers import Response
 
 
 class EnvironBuilder(werkzeug.test.EnvironBuilder):
@@ -232,12 +234,28 @@ class FlaskClient(Client):
         # within a single block.
         self._context_stack.close()
 
-        response = super().open(
-            request,
-            buffered=buffered,
-            follow_redirects=follow_redirects,
-        )
-        response.json_module = self.application.json  # type: ignore[assignment]
+        finished_responses: list[Response] = []
+
+        def _capture_response(sender: Flask, **extra: t.Any) -> None:
+            finished_responses.append(extra["response"])
+
+        # Capture the app's response to learn which JSON provider generated it.
+        with request_finished.connected_to(_capture_response, sender=self.application):
+            response = super().open(
+                request,
+                buffered=buffered,
+                follow_redirects=follow_redirects,
+            )
+
+        json_module: t.Any = self.application.json
+
+        if finished_responses:
+            json_module = (
+                getattr(finished_responses[-1], "_json_provider", None)
+                or self.application.json
+            )
+
+        response.json_module = json_module
 
         # Re-push contexts that were preserved during the request.
         for cm in self._new_contexts:

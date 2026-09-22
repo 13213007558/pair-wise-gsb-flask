@@ -14,6 +14,8 @@ from .helpers import _split_blueprint_path
 if t.TYPE_CHECKING:  # pragma: no cover
     from werkzeug.routing import Rule
 
+    from .json.provider import JSONProvider
+
 
 class Request(RequestBase):
     """The request object used by default in Flask.  Remembers the
@@ -241,7 +243,51 @@ class Response(ResponseBase):
 
     json_module = json
 
+    _json_provider: JSONProvider | None = None
+    """The JSON provider that created this response, if it was created
+    by a provider's :meth:`~flask.json.provider.JSONProvider.response`
+    method. :meth:`get_json` uses this to parse the data, so that
+    parsing a response after its request has ended still uses the same
+    provider that generated it.
+
+    .. versionadded:: 3.2
+    """
+
     autocorrect_location_header = False
+
+    def get_json(self, force: bool = False, silent: bool = False) -> t.Any | None:
+        """Parse :attr:`data` as JSON.
+
+        If the response was created by a
+        :class:`~flask.json.provider.JSONProvider`, that provider is
+        used to parse the data, even if the request that generated the
+        response has ended. Otherwise, this behaves like
+        :meth:`werkzeug.wrappers.Response.get_json`.
+
+        :param force: Ignore the mimetype and always try to parse JSON.
+        :param silent: Silence parsing errors and return ``None``
+            instead.
+
+        .. versionchanged:: 3.2
+            Use the provider that created the response, if any.
+        """
+        provider = self._json_provider
+
+        if provider is None:
+            return super().get_json(force=force, silent=silent)
+
+        if not (force or self.is_json):
+            return None
+
+        data = self.get_data()
+
+        try:
+            return provider.loads(data)
+        except ValueError:
+            if not silent:
+                raise
+
+            return None
 
     @property
     def max_cookie_size(self) -> int:  # type: ignore

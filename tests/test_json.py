@@ -344,3 +344,238 @@ def test_html_method():
 
     result = json.dumps(ObjectWithHTML())
     assert result == '"<p>test</p>"'
+
+
+class CurrencyJSONProvider(DefaultJSONProvider):
+    """Serialize ``Decimal`` as an object with an amount and currency,
+    and parse such objects back to ``Decimal``.
+    """
+
+    currency = "EUR"
+
+    @classmethod
+    def default(cls, o):
+        if isinstance(o, decimal.Decimal):
+            return {"amount": str(o), "currency": cls.currency}
+
+        return DefaultJSONProvider.default(o)
+
+    def loads(self, s, **kwargs):
+        def object_hook(d):
+            if set(d) == {"amount", "currency"}:
+                return decimal.Decimal(d["amount"])
+
+            return d
+
+        kwargs.setdefault("object_hook", object_hook)
+        return super().loads(s, **kwargs)
+
+
+class OtherCurrencyJSONProvider(CurrencyJSONProvider):
+    currency = "USD"
+
+
+def make_currency_bp(**kwargs):
+    bp = flask.Blueprint("currency", __name__)
+    bp.json_provider_class = CurrencyJSONProvider
+
+    @bp.get("/price")
+    def price():
+        return {"price": decimal.Decimal("1.5")}
+
+    @bp.get("/jsonify")
+    def price_jsonify():
+        return flask.jsonify(price=decimal.Decimal("1.5"))
+
+    @bp.post("/echo")
+    def echo():
+        data = flask.request.get_json()
+        return {"type": type(data["price"]).__name__}
+
+    return bp
+
+
+def test_blueprint_json_provider_dict(app, client):
+    app.register_blueprint(make_currency_bp(), url_prefix="/bp")
+
+    @app.get("/price")
+    def app_price():
+        return {"price": decimal.Decimal("1.5")}
+
+    rv = client.get("/bp/price")
+    assert rv.get_json() == {"price": decimal.Decimal("1.5")}
+    assert b'"currency":"EUR"' in rv.data
+
+    rv = client.get("/price")
+    assert rv.get_json() == {"price": "1.5"}
+    assert b"currency" not in rv.data
+
+
+def test_blueprint_json_provider_jsonify(app, client):
+    app.register_blueprint(make_currency_bp(), url_prefix="/bp")
+
+    @app.get("/jsonify")
+    def app_jsonify():
+        return flask.jsonify(price=decimal.Decimal("1.5"))
+
+    rv = client.get("/bp/jsonify")
+    assert rv.get_json() == {"price": decimal.Decimal("1.5")}
+
+    rv = client.get("/jsonify")
+    assert rv.get_json() == {"price": "1.5"}
+
+
+def test_blueprint_json_provider_request_get_json(app, client):
+    app.register_blueprint(make_currency_bp(), url_prefix="/bp")
+
+    @app.post("/echo")
+    def app_echo():
+        data = flask.request.get_json()
+        return {"type": type(data["price"]).__name__}
+
+    data = '{"price": {"amount": "2.5", "currency": "EUR"}}'
+    rv = client.post("/bp/echo", data=data, content_type="application/json")
+    assert rv.get_json() == {"type": "Decimal"}
+
+    rv = client.post("/echo", data=data, content_type="application/json")
+    assert rv.get_json() == {"type": "dict"}
+
+
+def test_blueprint_json_provider_nested(app, client):
+    inner = flask.Blueprint("inner", __name__)
+
+    @inner.get("/price")
+    def inner_price():
+        return {"price": decimal.Decimal("1.5")}
+
+    own = flask.Blueprint("own", __name__)
+    own.json_provider_class = OtherCurrencyJSONProvider
+
+    @own.get("/price")
+    def own_price():
+        return {"price": decimal.Decimal("1.5")}
+
+    outer = flask.Blueprint("outer", __name__)
+    outer.json_provider_class = CurrencyJSONProvider
+    outer.register_blueprint(inner, url_prefix="/inner")
+    outer.register_blueprint(own, url_prefix="/own")
+    app.register_blueprint(outer, url_prefix="/outer")
+
+    # The inner blueprint inherits the outer blueprint's provider.
+    rv = client.get("/outer/inner/price")
+    assert b'"currency":"EUR"' in rv.data
+
+    # A blueprint's own provider takes precedence over the outer one.
+    rv = client.get("/outer/own/price")
+    assert b'"currency":"USD"' in rv.data
+
+
+def test_blueprint_json_provider_per_registration(app, client):
+    bp = flask.Blueprint("api", __name__)
+
+    @bp.get("/price")
+    def price():
+        return {"price": decimal.Decimal("1.5")}
+
+    app.register_blueprint(
+        bp,
+        name="eur",
+        url_prefix="/eur",
+        json_provider_class=CurrencyJSONProvider,
+    )
+    app.register_blueprint(
+        bp,
+        name="usd",
+        url_prefix="/usd",
+        json_provider_class=OtherCurrencyJSONProvider,
+    )
+
+    rv = client.get("/eur/price")
+    assert b'"currency":"EUR"' in rv.data
+
+    rv = client.get("/usd/price")
+    assert b'"currency":"USD"' in rv.data
+
+
+def test_blueprint_json_provider_error(app, client):
+    app.register_blueprint(make_currency_bp(), url_prefix="/bp")
+
+    @app.errorhandler(404)
+    def not_found(e):
+        return {"error": decimal.Decimal("0.1")}, 404
+
+    @app.get("/app-missing")
+    def app_missing():
+        flask.abort(404)
+
+    bp_err = flask.Blueprint("bp_err", __name__)
+    bp_err.json_provider_class = CurrencyJSONProvider
+
+    @bp_err.get("/missing")
+    def bp_err_missing():
+        flask.abort(404)
+
+    app.register_blueprint(bp_err, url_prefix="/bp-err")
+
+    # A request that matched a blueprint route uses the blueprint's
+    # provider for error responses too.
+    rv = client.get("/bp-err/missing")
+    assert rv.status_code == 404
+    assert rv.get_json() == {"error": decimal.Decimal("0.1")}
+
+    # A request that matched an app route uses the app's provider.
+    rv = client.get("/app-missing")
+    assert rv.get_json() == {"error": "0.1"}
+
+    # A request that did not match a route uses the app's provider.
+    rv = client.get("/no-such-route")
+    assert rv.get_json() == {"error": "0.1"}
+
+
+def test_blueprint_json_provider_response_get_json_after_request(app, client):
+    app.register_blueprint(make_currency_bp(), url_prefix="/bp")
+
+    @app.get("/price")
+    def app_price():
+        return {"price": decimal.Decimal("1.5")}
+
+    # Interleave requests to both providers, then parse the responses
+    # in reverse order, after each request has ended.
+    rv_app = client.get("/price")
+    rv_bp = client.get("/bp/price")
+    rv_app2 = client.get("/price")
+
+    assert rv_app2.get_json() == {"price": "1.5"}
+    assert rv_bp.get_json() == {"price": decimal.Decimal("1.5")}
+    assert rv_app.get_json() == {"price": "1.5"}
+
+
+def test_blueprint_json_provider_response_object_after_request(app):
+    bp = flask.Blueprint("currency", __name__)
+    bp.json_provider_class = CurrencyJSONProvider
+
+    @bp.get("/price")
+    def price():
+        return {"price": decimal.Decimal("1.5")}
+
+    app.register_blueprint(bp, url_prefix="/bp")
+
+    with app.test_request_context("/bp/price"):
+        rv_bp = flask.jsonify(price=decimal.Decimal("1.5"))
+
+    with app.test_request_context("/other"):
+        rv_app = flask.jsonify(price=decimal.Decimal("1.5"))
+
+    # The request contexts have ended, but each response still uses the
+    # provider that generated it.
+    assert rv_bp.get_json() == {"price": decimal.Decimal("1.5")}
+    assert rv_app.get_json() == {"price": "1.5"}
+
+
+def test_blueprint_json_provider_app_context_default(app):
+    app.register_blueprint(make_currency_bp(), url_prefix="/bp")
+
+    # Outside a request, the app's provider is used.
+    with app.app_context():
+        assert flask.json.dumps(decimal.Decimal("1.5")) == '"1.5"'
+        assert app.json.dumps(decimal.Decimal("1.5")) == '"1.5"'

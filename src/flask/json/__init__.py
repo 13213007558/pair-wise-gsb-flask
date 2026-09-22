@@ -5,6 +5,7 @@ import typing as t
 
 from ..globals import current_app
 from .provider import _default
+from .provider import _get_current_provider
 
 if t.TYPE_CHECKING:  # pragma: no cover
     from ..wrappers import Response
@@ -19,6 +20,10 @@ def dumps(obj: t.Any, **kwargs: t.Any) -> str:
 
     :param obj: The data to serialize.
     :param kwargs: Arguments passed to the ``dumps`` implementation.
+
+    .. versionchanged:: 3.2
+        If the current request matched a blueprint that has a JSON
+        provider, that provider is used instead of the app's.
 
     .. versionchanged:: 2.3
         The ``app`` parameter was removed.
@@ -38,7 +43,7 @@ def dumps(obj: t.Any, **kwargs: t.Any) -> str:
         context for configuration.
     """
     if current_app:
-        return current_app.json.dumps(obj, **kwargs)
+        return _get_current_provider().dumps(obj, **kwargs)
 
     kwargs.setdefault("default", _default)
     return _json.dumps(obj, **kwargs)
@@ -56,6 +61,10 @@ def dump(obj: t.Any, fp: t.IO[str], **kwargs: t.Any) -> None:
         encoding to be valid JSON.
     :param kwargs: Arguments passed to the ``dump`` implementation.
 
+    .. versionchanged:: 3.2
+        If the current request matched a blueprint that has a JSON
+        provider, that provider is used instead of the app's.
+
     .. versionchanged:: 2.3
         The ``app`` parameter was removed.
 
@@ -68,7 +77,7 @@ def dump(obj: t.Any, fp: t.IO[str], **kwargs: t.Any) -> None:
         removed in Flask 2.1.
     """
     if current_app:
-        current_app.json.dump(obj, fp, **kwargs)
+        _get_current_provider().dump(obj, fp, **kwargs)
     else:
         kwargs.setdefault("default", _default)
         _json.dump(obj, fp, **kwargs)
@@ -83,6 +92,10 @@ def loads(s: str | bytes, **kwargs: t.Any) -> t.Any:
 
     :param s: Text or UTF-8 bytes.
     :param kwargs: Arguments passed to the ``loads`` implementation.
+
+    .. versionchanged:: 3.2
+        If the current request matched a blueprint that has a JSON
+        provider, that provider is used instead of the app's.
 
     .. versionchanged:: 2.3
         The ``app`` parameter was removed.
@@ -100,7 +113,7 @@ def loads(s: str | bytes, **kwargs: t.Any) -> t.Any:
         context for configuration.
     """
     if current_app:
-        return current_app.json.loads(s, **kwargs)
+        return _get_current_provider().loads(s, **kwargs)
 
     return _json.loads(s, **kwargs)
 
@@ -114,6 +127,10 @@ def load(fp: t.IO[t.AnyStr], **kwargs: t.Any) -> t.Any:
 
     :param fp: A file opened for reading text or UTF-8 bytes.
     :param kwargs: Arguments passed to the ``load`` implementation.
+
+    .. versionchanged:: 3.2
+        If the current request matched a blueprint that has a JSON
+        provider, that provider is used instead of the app's.
 
     .. versionchanged:: 2.3
         The ``app`` parameter was removed.
@@ -130,7 +147,7 @@ def load(fp: t.IO[t.AnyStr], **kwargs: t.Any) -> t.Any:
         mode, or binary mode with UTF-8 bytes.
     """
     if current_app:
-        return current_app.json.load(fp, **kwargs)
+        return _get_current_provider().load(fp, **kwargs)
 
     return _json.load(fp, **kwargs)
 
@@ -154,6 +171,10 @@ def jsonify(*args: t.Any, **kwargs: t.Any) -> Response:
         treat as a list to serialize.
     :param kwargs: Treat as a dict to serialize.
 
+    .. versionchanged:: 3.2
+        If the current request matched a blueprint that has a JSON
+        provider, that provider is used instead of the app's.
+
     .. versionchanged:: 2.2
         Calls ``current_app.json.response``, allowing an app to override
         the behavior.
@@ -167,4 +188,4 @@ def jsonify(*args: t.Any, **kwargs: t.Any) -> Response:
 
     .. versionadded:: 0.2
     """
-    return current_app.json.response(*args, **kwargs)  # type: ignore[return-value]
+    return _get_current_provider().response(*args, **kwargs)  # type: ignore[return-value]

@@ -228,6 +228,15 @@ provider to :attr:`flask.Flask.json_provider_class` or
 :attr:`flask.Flask.json`. The functions provided by ``flask.json`` will
 use methods on ``app.json`` if an app context is active.
 
+A blueprint can use a different provider for requests that match its
+routes by setting :attr:`flask.Blueprint.json_provider_class`, or by
+passing ``json_provider_class`` to
+:meth:`flask.Flask.register_blueprint` to configure each registration
+separately. For nested blueprints, the innermost blueprint with a
+provider is used. Responses created by a provider remember it, so
+parsing a response with ``get_json`` after its request has ended still
+uses the same provider.
+
 Jinja's ``|tojson`` filter is configured to use the app's JSON provider.
 The filter marks the output with ``|safe``. Use it to render data inside
 HTML ``<script>`` tags.

@@ -3,6 +3,12 @@ Version 3.2.0
 
 Unreleased
 
+-   Blueprints can set ``json_provider_class``, or pass it to
+    ``register_blueprint``, to use a different JSON provider for
+    requests that match their routes. Nested blueprints use the
+    innermost provider. Responses created by a provider remember it, so
+    ``response.get_json()`` uses the same provider even after the
+    request has ended.
 -   Drop support for Python 3.9. :pr:`5730`
 -   Remove previously deprecated code: ``__version__``. :pr:`5648`
 -   ``RequestContext`` has merged with ``AppContext``. ``RequestContext`` is now

@@ -12,6 +12,7 @@ from .scaffold import Scaffold
 from .scaffold import setupmethod
 
 if t.TYPE_CHECKING:  # pragma: no cover
+    from ..json.provider import JSONProvider
     from .app import App
 
 DeferredSetupFunction = t.Callable[["BlueprintSetupState"], None]
@@ -171,6 +172,25 @@ class Blueprint(Scaffold):
 
     _got_registered_once = False
 
+    json_provider_class: type[JSONProvider] | None = None
+    """A subclass of :class:`~flask.json.provider.JSONProvider` to use
+    for requests that match this blueprint's routes, instead of the
+    application's :attr:`~flask.Flask.json` provider. An instance is
+    created and stored for each registration when the blueprint is
+    registered on an application.
+
+    The default, ``None``, uses the app's provider, or the provider of
+    the nearest parent blueprint that has one set for nested
+    blueprints.
+
+    This can be overridden for each registration by passing
+    ``json_provider_class`` to :meth:`~flask.Flask.register_blueprint`,
+    which allows the same blueprint object to be registered multiple
+    times with different providers.
+
+    .. versionadded:: 3.2
+    """
+
     def __init__(
         self,
         name: str,
@@ -319,6 +339,13 @@ class Blueprint(Scaffold):
         app.blueprints[name] = self
         self._got_registered_once = True
         state = self.make_setup_state(app, options, first_bp_registration)
+
+        json_provider_class = options.get(
+            "json_provider_class", self.json_provider_class
+        )
+
+        if json_provider_class is not None:
+            app._blueprint_json_providers[name] = json_provider_class(app)
 
         if self.has_static_folder:
             state.add_url_rule(
