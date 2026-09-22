@@ -30,6 +30,9 @@ Unreleased
     of only lower case file extensions. :pr:`6012`
 -   Fix parsing IPv6 with port in ``run`` and the test client. :pr:`6096`
 -   Add ``app.query`` route decorator for the HTTP QUERY method.
+-   Add ``Config.from_layers`` for recursive merging of named configuration
+    layers, deleted values, resolved references, source tracking, and
+    sensitive diagnostic values.
 
 
 Version 3.1.3

@@ -5,6 +5,10 @@ import json
 import os
 import types
 import typing as t
+from collections.abc import Mapping
+from collections.abc import Sequence
+from copy import deepcopy
+from dataclasses import dataclass
 
 from werkzeug.utils import import_string
 
@@ -15,6 +19,73 @@ if t.TYPE_CHECKING:
 
 
 T = t.TypeVar("T")
+
+
+class ConfigError(ValueError):
+    """A layered configuration could not be loaded."""
+
+
+class ConfigReferenceError(ConfigError):
+    """A configuration reference was missing or circular."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: tuple[str, ...],
+        source_path: tuple[tuple[str, ...], str] | None = None,
+        deleted_layer: str | None = None,
+        cycle: tuple[tuple[tuple[str, ...], str], ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.path = path
+        self.source_path = source_path
+        self.deleted_layer = deleted_layer
+        self.cycle = cycle
+
+
+class _DeleteSentinel:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "DELETE"
+
+
+DELETE = _DeleteSentinel()
+
+
+def _format_path(path: tuple[str, ...]) -> str:
+    return ".".join(path)
+
+
+@dataclass
+class _RawValue:
+    value: t.Any
+    layer: str
+    history: list[str]
+    sensitive: bool = False
+
+
+@dataclass
+class _DeletedValue:
+    layer: str
+    old: t.Any = None
+
+
+class _MappingValue(dict[str, t.Any]):
+    def __init__(self, layer: str, history: list[str], sensitive: bool = False) -> None:
+        super().__init__()
+        self.layer = layer
+        self.history = history
+        self.sensitive = sensitive
+
+
+class _ListValue(list[t.Any]):
+    def __init__(self, layer: str, history: list[str], sensitive: bool = False) -> None:
+        super().__init__()
+        self.layer = layer
+        self.history = history
+        self.sensitive = sensitive
 
 
 class ConfigAttribute(t.Generic[T]):
@@ -98,6 +169,256 @@ class Config(dict):  # type: ignore[type-arg]
     ) -> None:
         super().__init__(defaults or {})
         self.root_path = root_path
+        self._sources: _MappingValue | None = None
+        self._sensitive_paths: set[tuple[str, ...]] = set()
+
+    DELETE = DELETE
+
+    def from_layers(
+        self,
+        *layers: tuple[str, Mapping[str, t.Any]],
+        sensitive: t.Collection[str | t.Sequence[str]] = (),
+    ) -> bool:
+        """Merge named configuration mappings in order.
+
+        Nested mappings are merged recursively. Lists and non-mapping values
+        replace the previous value at their path. Config.DELETE removes a value
+        from an earlier layer. References in strings are resolved after all
+        layers have been merged.
+
+        The current config is replaced only after the complete merged config
+        has been built and resolved successfully.
+        """
+        prepared_layers: list[tuple[str, Mapping[str, t.Any]]] = []
+        seen_names: set[str] = set()
+
+        for layer in layers:
+            if (
+                not isinstance(layer, tuple)
+                or len(layer) != 2
+                or not isinstance(layer[0], str)
+                or not isinstance(layer[1], Mapping)
+            ):
+                raise TypeError("Each layer must be a (name, mapping) tuple.")
+
+            name = layer[0]
+            if not name:
+                raise ValueError("A configuration layer name cannot be empty.")
+            if name in seen_names:
+                raise ValueError(f"Duplicate configuration layer name {name!r}.")
+
+            seen_names.add(name)
+            prepared_layers.append((name, layer[1]))
+
+        sensitive_paths = [self._normalize_sensitive_path(path) for path in sensitive]
+        candidate = _MappingValue("", [])
+
+        for name, mapping in prepared_layers:
+            self._merge_mapping(candidate, mapping, name, ())
+
+        for path in sensitive_paths:
+            node = self._find_source_node(candidate, path, required=False)
+            if isinstance(node, _DeletedValue) or node is None:
+                raise ConfigError(
+                    f"Sensitive configuration path {_format_path(path)!r} does"
+                    " not exist."
+                )
+            self._mark_sensitive(node)
+
+        resolver = _ReferenceResolver(candidate)
+        resolved = t.cast(dict[str, t.Any], resolver.resolve(candidate, ()))
+
+        self.clear()
+        self.update(resolved)
+        self._sources = candidate
+        self._sensitive_paths = resolver.sensitive_paths
+        return True
+
+    @classmethod
+    def _normalize_sensitive_path(cls, path: str | t.Sequence[str]) -> tuple[str, ...]:
+        if isinstance(path, str):
+            return tuple(path.split("."))
+        if not isinstance(path, Sequence) or isinstance(path, bytes):
+            raise TypeError("Sensitive paths must be strings or string sequences.")
+        normalized = tuple(str(part) for part in path)
+        if not normalized or any(not part for part in normalized):
+            raise ValueError("Sensitive paths cannot be empty.")
+        return normalized
+
+    @classmethod
+    def _normalize_path(cls, path: str | t.Sequence[str]) -> tuple[str, ...]:
+        return cls._normalize_sensitive_path(path)
+
+    def _merge_mapping(
+        self,
+        target: _MappingValue,
+        source: Mapping[str, t.Any],
+        layer: str,
+        path: tuple[str, ...],
+    ) -> None:
+        for key, value in source.items():
+            if not isinstance(key, str):
+                raise ConfigError(
+                    "Configuration keys must be strings at"
+                    f" {_format_path((*path, repr(key)))}."
+                )
+            if not path and not key.isupper():
+                continue
+
+            incoming = self._make_node(value, layer)
+            if isinstance(incoming, _DeletedValue):
+                incoming.old = target.get(key)
+            current = target.get(key)
+            target[key] = self._merge_node(current, incoming, layer)
+
+    def _make_node(self, value: t.Any, layer: str) -> t.Any:
+        if value is DELETE:
+            return _DeletedValue(layer)
+        if isinstance(value, _DeletedValue):
+            return _DeletedValue(value.layer, value.old)
+        if isinstance(value, Mapping):
+            mapping_node = _MappingValue(layer, [layer])
+            for key, child in value.items():
+                mapping_node[key] = self._make_node(child, layer)
+            return mapping_node
+        if isinstance(value, list):
+            list_node = _ListValue(layer, [layer])
+            list_node.extend(self._make_node(child, layer) for child in value)
+            return list_node
+        if isinstance(value, (_RawValue, _MappingValue, _ListValue)):
+            return deepcopy(value)
+        return _RawValue(deepcopy(value), layer, [layer])
+
+    def _merge_node(self, current: t.Any, incoming: t.Any, layer: str) -> t.Any:
+        if isinstance(incoming, _DeletedValue):
+            return incoming
+
+        if isinstance(incoming, _MappingValue):
+            if isinstance(current, _MappingValue):
+                if layer not in current.history:
+                    current.history.append(layer)
+                current.layer = layer
+                for key, child in incoming.items():
+                    current[key] = self._merge_node(current.get(key), child, layer)
+                return current
+            if isinstance(current, _DeletedValue) and isinstance(
+                current.old, _MappingValue
+            ):
+                self._inherit_mapping_history(current.old, incoming)
+            incoming.history = self._combined_history(current, incoming)
+            return incoming
+
+        if isinstance(incoming, _ListValue):
+            if isinstance(current, _DeletedValue) and isinstance(
+                current.old, _ListValue
+            ):
+                incoming.history = self._combined_history(current.old, incoming)
+            else:
+                incoming.history = self._combined_history(current, incoming)
+            return incoming
+
+        if isinstance(current, _DeletedValue):
+            incoming.history = self._combined_history(current.old, incoming)
+            return incoming
+
+        incoming.history = self._combined_history(current, incoming)
+        return incoming
+
+    def _combined_history(self, current: t.Any, incoming: t.Any) -> list[str]:
+        history = getattr(current, "history", [])
+        return [*history, *(name for name in incoming.history if name not in history)]
+
+    def _inherit_mapping_history(
+        self, current: _MappingValue, incoming: _MappingValue
+    ) -> None:
+        for key, child in incoming.items():
+            old_child = current.get(key)
+            if old_child is None:
+                continue
+            child.history = self._combined_history(old_child, child)
+            if isinstance(child, _MappingValue) and isinstance(
+                old_child, _MappingValue
+            ):
+                self._inherit_mapping_history(old_child, child)
+
+    def _mark_sensitive(self, node: t.Any) -> None:
+        if hasattr(node, "sensitive"):
+            node.sensitive = True
+        if isinstance(node, _MappingValue):
+            for child in node.values():
+                self._mark_sensitive(child)
+        elif isinstance(node, _ListValue):
+            for child in node:
+                self._mark_sensitive(child)
+
+    def _find_source_node(
+        self,
+        root: _MappingValue | None,
+        path: tuple[str, ...],
+        *,
+        required: bool = True,
+    ) -> t.Any:
+        if root is None:
+            if required:
+                raise KeyError(_format_path(path))
+            return None
+
+        node: t.Any = root
+        missing = object()
+        current_path: tuple[str, ...] = ()
+
+        for part in path:
+            current_path = (*current_path, part)
+            if isinstance(node, _MappingValue):
+                node = node.get(part, missing)
+            elif isinstance(node, _ListValue) and part.lstrip("-").isdigit():
+                index = int(part)
+                try:
+                    node = node[index]
+                except IndexError:
+                    node = missing
+            else:
+                node = missing
+
+            if node is missing or isinstance(node, _DeletedValue):
+                if required:
+                    raise KeyError(_format_path(current_path))
+                return node
+
+        return node
+
+    def source_for(self, path: str | t.Sequence[str]) -> str:
+        """Return the layer that supplied the value at path."""
+        normalized = self._normalize_path(path)
+        node = self._find_source_node(self._sources, normalized)
+        return t.cast(str, node.layer)
+
+    def sources_for(self, path: str | t.Sequence[str]) -> list[str]:
+        """Return all layers that supplied the path, oldest to newest."""
+        normalized = self._normalize_path(path)
+        node = self._find_source_node(self._sources, normalized)
+        return [*t.cast(list[str], node.history)]
+
+    def is_sensitive(self, path: str | t.Sequence[str]) -> bool:
+        """Return whether a resolved path contains sensitive data."""
+        return self._normalize_path(path) in self._sensitive_paths
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__} {self._redacted(dict(self), ())!r}>"
+
+    def _redacted(self, value: t.Any, path: tuple[str, ...]) -> t.Any:
+        if path in self._sensitive_paths:
+            return "<redacted>"
+        if isinstance(value, dict):
+            return {
+                key: self._redacted(child, (*path, key)) for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                self._redacted(child, (*path, str(index)))
+                for index, child in enumerate(value)
+            ]
+        return value
 
     def from_envvar(self, variable_name: str, silent: bool = False) -> bool:
         """Loads a configuration from an environment variable pointing to
@@ -363,5 +684,243 @@ class Config(dict):  # type: ignore[type-arg]
             rv[key] = v
         return rv
 
-    def __repr__(self) -> str:
-        return f"<{type(self).__name__} {dict.__repr__(self)}>"
+
+class _ReferenceResolver:
+    def __init__(self, root: _MappingValue) -> None:
+        self.root = root
+        self.sensitive_paths: set[tuple[str, ...]] = set()
+        self.active: list[tuple[str, ...]] = []
+
+    def resolve(self, node: t.Any, path: tuple[str, ...]) -> t.Any:
+        owns_path = path not in self.active
+        if owns_path:
+            self.active.append(path)
+        try:
+            if isinstance(node, _MappingValue):
+                resolved_mapping = {
+                    key: self.resolve(child, (*path, key))
+                    for key, child in node.items()
+                    if not isinstance(child, _DeletedValue)
+                }
+                if node.sensitive:
+                    self._mark_path(path)
+                return resolved_mapping
+
+            if isinstance(node, _ListValue):
+                resolved_list = [
+                    self.resolve(child, (*path, str(index)))
+                    for index, child in enumerate(node)
+                ]
+                if node.sensitive:
+                    self._mark_path(path)
+                return resolved_list
+
+            if isinstance(node, _DeletedValue):
+                raise ConfigError("DELETE cannot be used inside a list.")
+
+            if not isinstance(node, _RawValue):
+                return node
+
+            if not isinstance(node.value, str):
+                if node.sensitive:
+                    self._mark_path(path)
+                return node.value
+
+            parts = self._parse(node.value, path, node.layer)
+            references = [part for part in parts if part[0] == "ref"]
+
+            if not references:
+                value = "".join(part[1] for part in parts)
+                if node.sensitive:
+                    self._mark_path(path)
+                return value
+
+            if len(parts) == 1:
+                _, ref_path = parts[0]
+                value, sensitive = self._resolve_reference(ref_path, path, node.layer)
+                if node.sensitive or sensitive:
+                    self._mark_path(path)
+                return value
+
+            rendered: list[str] = []
+            sensitive = node.sensitive
+            for kind, value in parts:
+                if kind == "text":
+                    rendered.append(value)
+                    continue
+
+                resolved_value, resolved_sensitive = self._resolve_reference(
+                    t.cast(tuple[str, ...], value), path, node.layer
+                )
+                sensitive = sensitive or resolved_sensitive
+                rendered.append(str(resolved_value))
+
+            if sensitive:
+                self._mark_path(path)
+            return "".join(rendered)
+        finally:
+            if owns_path and self.active and self.active[-1] == path:
+                self.active.pop()
+
+    def _resolve_reference(
+        self,
+        ref_path: tuple[str, ...],
+        source_path: tuple[str, ...],
+        source_layer: str,
+    ) -> tuple[t.Any, bool]:
+        if ref_path in self.active:
+            cycle_start = self.active.index(ref_path)
+            chain_paths = (*self.active[cycle_start:], ref_path)
+            cycle = tuple(
+                (chain_path, self._layer_for(chain_path)) for chain_path in chain_paths
+            )
+            formatted_cycle = " -> ".join(
+                f"{_format_path(chain_path)} (from {layer})"
+                for chain_path, layer in cycle
+            )
+            raise ConfigReferenceError(
+                f"Circular configuration reference at"
+                f" {_format_path(source_path)} (from {source_layer}):"
+                f" {formatted_cycle}.",
+                path=source_path,
+                source_path=(source_path, source_layer),
+                cycle=cycle,
+            )
+
+        target = self._lookup(ref_path, source_path, source_layer)
+        value = self.resolve(target, ref_path)
+        sensitive = self._target_is_sensitive(target, ref_path)
+        return value, sensitive
+
+    def _lookup(
+        self,
+        ref_path: tuple[str, ...],
+        source_path: tuple[str, ...],
+        source_layer: str,
+    ) -> t.Any:
+        node: t.Any = self.root
+        current_path: tuple[str, ...] = ()
+
+        for part in ref_path:
+            current_path = (*current_path, part)
+
+            if isinstance(node, _MappingValue):
+                if part not in node:
+                    self._missing_reference(ref_path, source_path, source_layer, None)
+                node = node[part]
+            elif isinstance(node, _ListValue):
+                if not part.lstrip("-").isdigit():
+                    self._missing_reference(ref_path, source_path, source_layer, None)
+                try:
+                    node = node[int(part)]
+                except IndexError:
+                    self._missing_reference(ref_path, source_path, source_layer, None)
+            else:
+                self._missing_reference(ref_path, source_path, source_layer, None)
+
+            if isinstance(node, _DeletedValue):
+                self._missing_reference(ref_path, source_path, source_layer, node.layer)
+
+        return node
+
+    def _missing_reference(
+        self,
+        ref_path: tuple[str, ...],
+        source_path: tuple[str, ...],
+        source_layer: str,
+        deleted_layer: str | None,
+    ) -> t.NoReturn:
+        deletion = ""
+        if deleted_layer is not None:
+            deletion = f" It was deleted by layer {deleted_layer!r}."
+        raise ConfigReferenceError(
+            f"Missing configuration reference at {_format_path(source_path)}"
+            f" (from {source_layer}): {_format_path(ref_path)} does not"
+            f" exist.{deletion}",
+            path=source_path,
+            source_path=(source_path, source_layer),
+            deleted_layer=deleted_layer,
+        )
+
+    def _parse(
+        self, value: str, path: tuple[str, ...], layer: str
+    ) -> list[tuple[str, t.Any]]:
+        parts: list[tuple[str, t.Any]] = []
+        text_parts: list[str] = []
+        index = 0
+
+        def flush_text() -> None:
+            if text_parts:
+                parts.append(("text", "".join(text_parts)))
+                text_parts.clear()
+
+        while index < len(value):
+            char = value[index]
+
+            if char == "$" and index + 1 < len(value) and value[index + 1] == "$":
+                text_parts.append("$")
+                index += 2
+                continue
+
+            if (
+                char == "\\"
+                and index + 2 < len(value)
+                and value[index + 1] == "$"
+                and value[index + 2] == "{"
+            ):
+                text_parts.append("$" + "{")
+                index += 3
+                continue
+
+            if char == "$" and index + 1 < len(value) and value[index + 1] == "{":
+                end = value.find("}", index + 2)
+                if end == -1:
+                    raise ConfigReferenceError(
+                        f"Unclosed configuration reference at"
+                        f" {_format_path(path)} (from {layer}).",
+                        path=path,
+                        source_path=(path, layer),
+                    )
+
+                expression = value[index + 2 : end]
+                ref_path = tuple(expression.split("."))
+                if not expression or any(not part for part in ref_path):
+                    raise ConfigReferenceError(
+                        f"Invalid configuration reference at"
+                        f" {_format_path(path)} (from {layer}): {expression!r}.",
+                        path=path,
+                        source_path=(path, layer),
+                    )
+
+                flush_text()
+                parts.append(("ref", ref_path))
+                index = end + 1
+                continue
+
+            text_parts.append(char)
+            index += 1
+
+        flush_text()
+        return parts
+
+    def _target_is_sensitive(self, target: t.Any, path: tuple[str, ...]) -> bool:
+        if path in self.sensitive_paths:
+            return True
+        return bool(getattr(target, "sensitive", False))
+
+    def _layer_for(self, path: tuple[str, ...]) -> str:
+        node: t.Any = self.root
+        for part in path:
+            if isinstance(node, _MappingValue):
+                node = node.get(part)
+            elif isinstance(node, _ListValue) and part.lstrip("-").isdigit():
+                node = node[int(part)]
+            else:
+                return "unknown"
+        return t.cast(str, getattr(node, "layer", "unknown"))
+
+    def _mark_path(self, path: tuple[str, ...]) -> None:
+        for index in range(len(path) + 1):
+            prefix = path[:index]
+            if prefix:
+                self.sensitive_paths.add(prefix)

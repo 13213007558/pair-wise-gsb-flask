@@ -539,6 +539,32 @@ Or from a JSON file:
     app.config.from_file("config.json", load=json.load)
 
 
+Configuring from Layers
+-----------------------
+
+Use Config.from_layers to merge named mappings in a fixed order. Nested
+mappings are merged recursively, while lists and scalar values replace the
+previous value. A value of Config.DELETE removes a key from an earlier layer.
+
+.. code-block:: python
+
+    app.config.from_layers(
+        ("default", default_config),
+        ("datacenter", datacenter_config),
+        ("environment", environment_config),
+    )
+
+References use the form ${PATH.TO.VALUE} and are resolved after every layer
+has been merged. A reference that is the entire value keeps the referenced
+value's type; a reference inside a larger string is rendered as text. Use $$
+or \$ to include a literal dollar sign without starting a reference.
+
+After loading, source_for returns the final layer for a path and sources_for
+returns all layers that supplied that path. Pass paths in sensitive to keep
+their values, and any values derived from them, out of repr diagnostics while
+still making them available to the application.
+
+
 Configuring from Environment Variables
 --------------------------------------
 
