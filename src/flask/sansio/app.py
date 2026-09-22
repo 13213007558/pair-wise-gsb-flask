@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import logging
 import os
 import sys
@@ -54,6 +55,33 @@ def _make_timedelta(value: timedelta | int | None) -> timedelta | None:
         return value
 
     return timedelta(seconds=value)
+
+
+# Python < 3.11 does not have exception groups.
+_BaseExceptionGroup: type[BaseException] | None = getattr(
+    builtins, "BaseExceptionGroup", None
+)
+
+
+class AmbiguousGroupHandlerError(RuntimeError):
+    """Raised when multiple exception group handlers registered at the same
+    level match every leaf of an exception group, but no single handler's
+    leaf class is more specific than all the others. Registration order is
+    never used to break the tie.
+
+    .. versionadded:: 3.2
+    """
+
+
+def _iter_group_leaves(group: BaseException) -> t.Iterator[BaseException]:
+    """Yield the leaf exceptions of an exception group, descending into
+    nested groups without modifying the group itself.
+    """
+    for exc in group.exceptions:  # type: ignore[union-attr]
+        if _BaseExceptionGroup is not None and isinstance(exc, _BaseExceptionGroup):
+            yield from _iter_group_leaves(exc)
+        else:
+            yield exc
 
 
 class App(Scaffold):
@@ -888,6 +916,71 @@ class App(Scaffold):
 
                     if handler is not None:
                         return handler
+        return None
+
+    def _find_error_group_handler(
+        self, e: BaseException, blueprints: list[str]
+    ) -> ft.ErrorHandlerCallable | None:
+        """Return a registered exception group handler for an exception
+        group, or ``None`` if no suitable handler is found.
+
+        A handler is only eligible if every leaf exception in the group is
+        an instance of the handler's leaf class. Handlers are considered
+        from the most specific blueprint level outwards. Within one level,
+        the handler with the most specific leaf class wins. If multiple
+        incomparable handlers remain, :class:`AmbiguousGroupHandlerError` is
+        raised. Groups containing leaves that are not :exc:`Exception`
+        subclasses are never handled.
+        """
+        if _BaseExceptionGroup is None or not isinstance(e, _BaseExceptionGroup):
+            return None
+
+        leaves = list(_iter_group_leaves(e))
+
+        # Groups containing BaseException leaves, such as KeyboardInterrupt,
+        # must not be converted into a response.
+        if not all(isinstance(leaf, Exception) for leaf in leaves):
+            return None
+
+        for name in (*blueprints, None):
+            handler_map = self.error_group_handler_spec[name]
+
+            if not handler_map:
+                continue
+
+            candidates = [
+                cls
+                for cls in handler_map
+                if all(isinstance(leaf, cls) for leaf in leaves)
+            ]
+
+            if not candidates:
+                continue
+
+            # The most specific candidates are those with no strict subclass
+            # among the candidates. If there is exactly one, it covers every
+            # other candidate and wins.
+            most_specific = [
+                cls
+                for cls in candidates
+                if not any(
+                    other is not cls and issubclass(other, cls) for other in candidates
+                )
+            ]
+
+            if len(most_specific) > 1:
+                scope = "the app" if name is None else f"blueprint {name!r}"
+                classes = ", ".join(cls.__name__ for cls in most_specific)
+                raise AmbiguousGroupHandlerError(
+                    f"Multiple exception group handlers registered for {scope}"
+                    f" can handle {e!r}, but none of their leaf classes"
+                    f" ({classes}) is more specific than the others. Register"
+                    " a handler for a more specific common base class to"
+                    " disambiguate."
+                )
+
+            return handler_map[most_specific[0]]
+
         return None
 
     def trap_http_exception(self, e: Exception) -> bool:

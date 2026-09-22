@@ -880,6 +880,11 @@ class Flask(App):
             bad key in debug mode rather than a generic bad request
             message.
 
+        .. versionchanged:: 3.2
+            An :exc:`ExceptionGroup` is passed whole to a matching
+            :meth:`error_group_handler` before regular error handlers are
+            considered.
+
         .. versionadded:: 0.7
         """
         if isinstance(e, BadRequestKeyError) and (
@@ -889,6 +894,14 @@ class Flask(App):
 
         if isinstance(e, HTTPException) and not self.trap_http_exception(e):
             return self.handle_http_exception(ctx, e)
+
+        # An exception group is passed whole to a single group handler
+        # whose leaf class matches every leaf in the group. It is never
+        # split up and passed to regular error handlers.
+        group_handler = self._find_error_group_handler(e, ctx.request.blueprints)
+
+        if group_handler is not None:
+            return self.ensure_sync(group_handler)(e)  # type: ignore[no-any-return]
 
         handler = self._find_error_handler(e, ctx.request.blueprints)
 

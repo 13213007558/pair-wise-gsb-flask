@@ -234,6 +234,46 @@ register handlers for both ``HTTPException`` and ``Exception``, the
 because the ``HTTPException`` handler is more specific.
 
 
+Exception Groups
+`````````````````
+
+.. versionadded:: 3.2
+
+Python 3.11 added :exc:`ExceptionGroup`, which libraries such as
+:class:`asyncio.TaskGroup` use to report multiple errors at once. A regular
+error handler can only match the group itself, not the leaf exceptions it
+contains. Use :meth:`~flask.Flask.error_group_handler` to register a
+handler for the base class of the *leaf* exceptions instead. The handler is
+only called if *every* leaf in the group matches, and receives the original
+group with its nested structure and tracebacks intact. The group is never
+split up and passed to regular error handlers.
+
+.. code-block:: python
+
+    @app.error_group_handler(DatabaseError)
+    def handle_database_group(group):
+        for error in group.exceptions:
+            app.logger.warning("database error: %s", error)
+        return "Multiple database errors occurred.", 500
+
+Group handlers can also be registered on blueprints with
+:meth:`~flask.Blueprint.error_group_handler`, or for the whole app from a
+blueprint with :meth:`~flask.Blueprint.app_error_group_handler`. If
+multiple handlers could handle a group, the handler registered for the
+most specific blueprint level is used. Within one level, the handler for
+the most specific leaf class is used. If no single most specific handler
+exists, an :class:`~flask.sansio.app.AmbiguousGroupHandlerError` is raised
+rather than relying on registration order.
+
+If no group handler matches every leaf, the group is handled like any other
+unhandled exception: regular error handlers are considered, then a 500
+Internal Server Error is returned and logged. Groups containing
+:exc:`BaseException` leaves that are not :exc:`Exception` subclasses, such
+as :exc:`KeyboardInterrupt`, are never passed to a group handler.
+
+Registering a group handler requires Python 3.11 or greater.
+
+
 Unhandled Exceptions
 ````````````````````
 

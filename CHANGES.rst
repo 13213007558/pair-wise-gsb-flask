@@ -28,6 +28,10 @@ Unreleased
     it's disabled in config. Previously, only disabling worked. :issue:`5916`
 -   ``Flask.select_jinja_autoescape`` uses case-insensitive comparison instead
     of only lower case file extensions. :pr:`6012`
+-   Add ``error_group_handler`` to register handlers that receive an entire
+    ``ExceptionGroup`` when every leaf exception matches a declared base
+    class. Handlers can be registered on apps and blueprints, and ambiguous
+    matches raise ``AmbiguousGroupHandlerError``. Requires Python 3.11.
 -   Fix parsing IPv6 with port in ``run`` and the test client. :pr:`6096`
 -   Add ``app.query`` route decorator for the HTTP QUERY method.
 

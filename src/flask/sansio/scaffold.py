@@ -125,6 +125,23 @@ class Scaffold:
             dict[int | None, dict[type[Exception], ft.ErrorHandlerCallable]],
         ] = defaultdict(lambda: defaultdict(dict))
 
+        #: A data structure of registered exception group handlers, in the
+        #: format ``{scope: {leaf_class: handler}}``. The ``scope`` key is
+        #: the name of a blueprint the handlers are active for, or ``None``
+        #: for all requests. The ``leaf_class`` key is the base class that
+        #: every leaf exception in a group must match for the handler to be
+        #: called with the original group.
+        #:
+        #: To register an exception group handler, use the
+        #: :meth:`error_group_handler` decorator.
+        #:
+        #: This data structure is internal. It should not be modified
+        #: directly and its format may change at any time.
+        self.error_group_handler_spec: dict[
+            ft.AppOrBlueprintKey,
+            dict[type[BaseException], ft.ErrorHandlerCallable],
+        ] = defaultdict(dict)
+
         #: A data structure of functions to call at the beginning of
         #: each request, in the format ``{scope: [functions]}``. The
         #: ``scope`` key is the name of a blueprint the functions are
@@ -660,6 +677,89 @@ class Scaffold:
         """
         exc_class, code = self._get_exc_class_and_code(code_or_exception)
         self.error_handler_spec[None][code][exc_class] = f
+
+    @setupmethod
+    def error_group_handler(
+        self, leaf_class: type[BaseException]
+    ) -> t.Callable[[T_error_handler], T_error_handler]:
+        """Register a function to handle an exception group by the base
+        class of its leaf exceptions.
+
+        A decorator that is used to register a function to handle an
+        :exc:`ExceptionGroup` (or nested groups) raised by a view, based on
+        the type of the leaf exceptions in the group. The handler is only
+        called if *every* leaf in the group is an instance of ``leaf_class``,
+        and receives the original group, preserving its nested structure and
+        tracebacks. The group is never split up into individual exceptions.
+        Example::
+
+            @app.error_group_handler(DatabaseError)
+            def handle_database_group(group):
+                return "multiple database errors", 500
+
+        This is available on both app and blueprint objects. When used on an
+        app, this can handle groups from every request. When used on a
+        blueprint, this can handle groups from requests that the blueprint
+        handles. To register with a blueprint and affect every request, use
+        :meth:`.Blueprint.app_error_group_handler`.
+
+        If multiple registered handlers could handle a group, the handler
+        registered for the most specific blueprint level is used. Within one
+        level, the handler for the most specific leaf class is used. If no
+        single most specific handler exists, an
+        :class:`~flask.sansio.app.AmbiguousGroupHandlerError` is raised
+        rather than relying on registration order.
+
+        Groups that contain :exc:`BaseException` leaves that are not
+        :exc:`Exception` subclasses, such as :exc:`KeyboardInterrupt`, are
+        never passed to a group handler.
+
+        Requires Python 3.11 or greater.
+
+        .. versionadded:: 3.2
+
+        :param leaf_class: the base class that every leaf exception in the
+            group must be an instance of for the handler to be called.
+        """
+
+        def decorator(f: T_error_handler) -> T_error_handler:
+            self.register_error_group_handler(leaf_class, f)
+            return f
+
+        return decorator
+
+    @setupmethod
+    def register_error_group_handler(
+        self,
+        leaf_class: type[BaseException],
+        f: ft.ErrorHandlerCallable,
+    ) -> None:
+        """Alternative error attach function to the
+        :meth:`error_group_handler` decorator that is more straightforward to
+        use for non decorator usage.
+
+        Requires Python 3.11 or greater.
+
+        .. versionadded:: 3.2
+        """
+        if sys.version_info < (3, 11):
+            raise RuntimeError(
+                "Exception group handlers require Python 3.11 or greater."
+            )
+
+        if isinstance(leaf_class, BaseException):
+            raise TypeError(
+                f"{leaf_class!r} is an instance, not a class. Group handlers"
+                " can only be registered for exception classes."
+            )
+
+        if not (isinstance(leaf_class, type) and issubclass(leaf_class, BaseException)):
+            raise ValueError(
+                f"{leaf_class!r} is not an exception class. Group handlers"
+                " can only be registered for exception classes."
+            )
+
+        self.error_group_handler_spec[None][leaf_class] = f
 
     @staticmethod
     def _get_exc_class_and_code(
