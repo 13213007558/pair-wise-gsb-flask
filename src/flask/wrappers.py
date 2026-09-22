@@ -10,6 +10,8 @@ from werkzeug.wrappers import Response as ResponseBase
 from . import json
 from .globals import current_app
 from .helpers import _split_blueprint_path
+from .json_seq import ErrorCallback
+from .json_seq import _JSONSeqIterator
 
 if t.TYPE_CHECKING:  # pragma: no cover
     from werkzeug.routing import Rule
@@ -55,6 +57,8 @@ class Request(RequestBase):
     _max_content_length: int | None = None
     _max_form_memory_size: int | None = None
     _max_form_parts: int | None = None
+    _body_consumed: bool = False
+    _json_seq_iterator: _JSONSeqIterator | None = None
 
     @property
     def max_content_length(self) -> int | None:
@@ -195,7 +199,13 @@ class Request(RequestBase):
         return _split_blueprint_path(name)
 
     def _load_form_data(self) -> None:
+        if self._json_seq_iterator is not None:
+            self._assert_no_body_conflict()
+
         super()._load_form_data()
+
+        if self.form or self.files:
+            self._body_consumed = True
 
         # In debug mode we're replacing the files multidict with an ad-hoc
         # subclass that raises a different error for key errors.
@@ -208,6 +218,89 @@ class Request(RequestBase):
             from .debughelpers import attach_enctype_error_multidict
 
             attach_enctype_error_multidict(self)
+
+    @property
+    def stream(self):  # type: ignore[override]
+        if self._json_seq_iterator is not None:
+            return self._json_seq_iterator._stream
+
+        return _ConsumingStream(self, super().stream)
+
+    @property
+    def is_json_seq(self) -> bool:
+        return self.mimetype == "application/json-seq"
+
+    def _assert_no_body_conflict(self) -> None:
+        if self._json_seq_iterator is not None:
+            raise RuntimeError(
+                "The request body is being consumed by a JSON sequence"
+                " iterator."
+            )
+
+    def _assert_json_seq_available(self) -> None:
+        if self._json_seq_iterator is not None:
+            raise RuntimeError(
+                "A JSON sequence iterator is already consuming this request body."
+            )
+
+        if getattr(self, "_cached_data", None) is not None or self._body_consumed:
+            raise RuntimeError("The request body has already been consumed.")
+
+    def get_data(
+        self, cache: bool = True, as_text: bool = False, parse_form_data: bool = False
+    ) -> bytes | str:
+        self._assert_no_body_conflict()
+
+        if self._body_consumed and getattr(self, "_cached_data", None) is None:
+            raise RuntimeError("The request body has already been consumed.")
+
+        if not cache:
+            self._body_consumed = True
+
+        return super().get_data(
+            cache=cache, as_text=as_text, parse_form_data=parse_form_data
+        )
+
+    def get_json(
+        self, force: bool = False, silent: bool = False, cache: bool = True
+    ) -> t.Any | None:
+        self._assert_no_body_conflict()
+
+        if self._body_consumed and getattr(self, "_cached_data", None) is None:
+            raise RuntimeError("The request body has already been consumed.")
+
+        return super().get_json(force=force, silent=silent, cache=cache)
+
+    def iter_json_seq(
+        self,
+        *,
+        force: bool = False,
+        strict: bool = True,
+        on_bad_record: ErrorCallback | None = None,
+        max_record_size: int | None = 1024 * 1024,
+    ) -> t.Iterator[t.Any]:
+        """Yield records from an RFC 7464 ``application/json-seq`` body.
+
+        Records are read from the uncached request stream. In non-strict mode,
+        ``on_bad_record`` receives the zero-based record index, a half-open
+        byte range, and the error category, and reading resumes at the next
+        RS byte.
+        """
+        if not (force or self.is_json_seq):
+            return self.on_json_loading_failed(None)
+
+        self._assert_json_seq_available()
+        iterator = _JSONSeqIterator(
+            self,
+            strict=strict,
+            on_bad_record=on_bad_record,
+            max_record_size=max_record_size,
+        )
+        self._json_seq_iterator = iterator
+        self._body_consumed = True
+        return iterator
+
+    iter_json_sequence = iter_json_seq
 
     def on_json_loading_failed(self, e: ValueError | None) -> t.Any:
         try:
@@ -255,3 +348,44 @@ class Response(ResponseBase):
 
         # return Werkzeug's default when not in an app context
         return super().max_cookie_size
+
+
+class _ConsumingStream:
+    def __init__(self, request: Request, stream: t.IO[bytes]) -> None:
+        self.__dict__["_request"] = request
+        self.__dict__["_stream"] = stream
+
+    def _consume(self, data: bytes) -> bytes:
+        if data:
+            self._request._body_consumed = True
+        return data
+
+    def read(self, size: int = -1) -> bytes:  # type: ignore[override]
+        return self._consume(self._stream.read(size))
+
+    def readline(self, size: int = -1) -> bytes:  # type: ignore[override]
+        return self._consume(self._stream.readline(size))
+
+    def readlines(self, hint: int = -1) -> list[bytes]:
+        lines = self._stream.readlines(hint)
+        if lines:
+            self._request._body_consumed = True
+        return lines
+
+    def __iter__(self):
+        for line in self._stream:
+            if line:
+                self._request._body_consumed = True
+            yield line
+
+    def read1(self, size: int = -1) -> bytes:  # type: ignore[override]
+        return self._consume(self._stream.read1(size))
+
+    def readinto(self, buffer: bytearray) -> int:  # type: ignore[override]
+        size = self._stream.readinto(buffer)
+        if size:
+            self._request._body_consumed = True
+        return size
+
+    def __getattr__(self, name: str) -> t.Any:
+        return getattr(self._stream, name)
