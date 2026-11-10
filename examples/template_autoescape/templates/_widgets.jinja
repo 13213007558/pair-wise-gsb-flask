@@ -1,0 +1,9 @@
+{# Imported macros. A macro escapes its arguments the same way the
+   importing template does; Markup and |safe stay trusted everywhere. #}
+{% macro badge(value) -%}
+<span class="badge">{{ value }}</span>
+{%- endmacro %}
+
+{% macro trusted(value) -%}
+<span class="trusted">{{ value|safe }}</span>
+{%- endmacro %}

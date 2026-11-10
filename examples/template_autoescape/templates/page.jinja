@@ -1,0 +1,10 @@
+{% extends "base.jinja" %}
+{% from "_widgets.jinja" import badge, trusted %}
+{% block title %}Page: {{ super() }}{% endblock %}
+{% block body %}
+  <h1>{{ name }}</h1>
+  {% include "_partials.jinja" %}
+  <section>{{ snippet }}</section>
+  <div>{{ badge(name) }}</div>
+  <div>{{ trusted(name) }}</div>
+{% endblock %}

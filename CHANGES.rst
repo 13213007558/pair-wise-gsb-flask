@@ -28,6 +28,14 @@ Unreleased
     it's disabled in config. Previously, only disabling worked. :issue:`5916`
 -   ``Flask.select_jinja_autoescape`` uses case-insensitive comparison instead
     of only lower case file extensions. :pr:`6012`
+-   Add the ``JINJA_AUTOESCAPE_POLICY`` config key and the
+    ``AutoEscapePolicy``, ``SelectiveAutoEscapePolicy``,
+    ``HTMLAutoEscapePolicy`` and ``TextAutoEscapePolicy`` classes. The
+    policy is attached to each application's Jinja environment instead
+    of relying only on the template file extension, so strict HTML
+    escaping and explicit plain-text mode can coexist across apps in one
+    process without monkey-patching Jinja. The default ``"selective"``
+    policy preserves the previous extension-based behavior.
 -   Fix parsing IPv6 with port in ``run`` and the test client. :pr:`6096`
 -   Add ``app.query`` route decorator for the HTTP QUERY method.
 

@@ -27,6 +27,8 @@ from ..helpers import get_debug_flag
 from ..json.provider import DefaultJSONProvider
 from ..json.provider import JSONProvider
 from ..logging import create_logger
+from ..templating import _autoescape_policies
+from ..templating import AutoEscapePolicy
 from ..templating import DispatchingJinjaLoader
 from ..templating import Environment
 from .scaffold import _endpoint_from_view_func
@@ -531,9 +533,64 @@ class App(Scaffold):
         """
         return DispatchingJinjaLoader(self)
 
+    @cached_property
+    def jinja_autoescape_policy(self) -> t.Callable[[str | None], bool]:
+        """The resolved :class:`~flask.templating.AutoEscapePolicy` used
+        by :attr:`jinja_env`.
+
+        The policy is built from the ``JINJA_AUTOESCAPE_POLICY`` config
+        key the first time it is accessed. It may be a policy name
+        (``"selective"``, ``"html"`` or ``"text"``), a
+        :class:`~flask.templating.AutoEscapePolicy` instance or subclass,
+        or any callable taking a template name and returning a bool.
+
+        .. versionadded:: 3.2
+        """
+        return self.get_jinja_autoescape_policy()
+
+    def get_jinja_autoescape_policy(self) -> t.Callable[[str | None], bool]:
+        """Resolve the ``JINJA_AUTOESCAPE_POLICY`` config value into a
+        callable autoescape policy.
+
+        Override this method to customize how the policy is selected
+        without changing the environment setup. It is called once and
+        cached on :attr:`jinja_autoescape_policy`.
+
+        .. versionadded:: 3.2
+        """
+        policy = self.config["JINJA_AUTOESCAPE_POLICY"]
+
+        if isinstance(policy, str):
+            try:
+                return _autoescape_policies[policy]()
+            except KeyError as e:
+                raise RuntimeError(
+                    f"Unknown JINJA_AUTOESCAPE_POLICY {policy!r}. Valid names are"
+                    f" {', '.join(sorted(_autoescape_policies))}."
+                ) from e
+
+        if isinstance(policy, type) and issubclass(policy, AutoEscapePolicy):
+            return policy()
+
+        if callable(policy):
+            return t.cast("t.Callable[[str | None], bool]", policy)
+
+        raise RuntimeError(
+            "JINJA_AUTOESCAPE_POLICY must be a policy name, an"
+            " AutoEscapePolicy subclass or instance, or a callable."
+        )
+
     def select_jinja_autoescape(self, filename: str | None) -> bool:
         """Returns ``True`` if autoescaping should be active for the given
         template name. If no template name is given, returns `True`.
+
+        The decision is delegated to :attr:`jinja_autoescape_policy`, so
+        it stays consistent with the policy used by the Jinja
+        environment and can be inspected independently of rendering.
+
+        .. versionchanged:: 3.2
+            Delegate to the configured ``JINJA_AUTOESCAPE_POLICY``
+            instead of checking file extensions directly.
 
         .. versionchanged:: 3.2
             Use case-insensitive comparison instead of only lower case.
@@ -543,9 +600,7 @@ class App(Scaffold):
 
         .. versionadded:: 0.5
         """
-        if filename is None:
-            return True
-        return filename.lower().endswith((".html", ".htm", ".xml", ".xhtml", ".svg"))
+        return self.jinja_autoescape_policy(filename)
 
     @property
     def debug(self) -> bool:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections.abc as cabc
 import typing as t
 
 from jinja2 import BaseLoader
@@ -31,6 +32,107 @@ def _default_template_ctx_processor() -> dict[str, t.Any]:
         # RequestContext.session, which sets session.accessed.
 
     return rv
+
+
+#: File extensions that are treated as HTML by the selective policy.
+_default_html_extensions: frozenset[str] = frozenset(
+    (".html", ".htm", ".xml", ".xhtml", ".svg")
+)
+
+
+class AutoEscapePolicy:
+    """Decide whether Jinja autoescaping is active when a template is
+    compiled.
+
+    A policy instance (or any other callable taking the template name)
+    becomes the ``autoescape`` argument of the Jinja environment. Jinja
+    calls it with the template's :attr:`~jinja2.Template.name` while
+    compiling a template loaded by name, and with ``None`` for templates
+    created from a source string (``render_template_string``). The
+    returned value applies to the whole compiled template, including
+    templates it extends, includes, or imports.
+
+    Configuring a policy never changes Jinja globally. Each application
+    creates its own :class:`~jinja2.Environment` with its own policy, so
+    applications with different policies can run in the same process
+    without affecting each other.
+
+    Subclass this and override :meth:`should_escape` to implement custom
+    behavior.
+    """
+
+    def should_escape(self, template_name: str | None) -> bool:
+        raise NotImplementedError()
+
+    def __call__(self, template_name: str | None) -> bool:
+        return self.should_escape(template_name)
+
+
+class HTMLAutoEscapePolicy(AutoEscapePolicy):
+    """Escape every template unless its name uses a non-HTML extension.
+
+    This is the strict policy. Templates named like ``mail.txt`` are not
+    treated as HTML, but a template name supplied at run time (for
+    example by a user) cannot disable escaping by choosing an extension,
+    because any name without a known non-HTML extension is escaped too.
+    Templates rendered from a source string (``template_name is None``)
+    are always escaped.
+
+    :param non_html_extensions: File extensions, including the dot, that
+        identify plain-text output. Names are matched case-insensitively.
+    """
+
+    def __init__(
+        self, non_html_extensions: cabc.Iterable[str] = (".txt", ".text")
+    ) -> None:
+        self.non_html_extensions = frozenset(
+            extension.lower() for extension in non_html_extensions
+        )
+
+    def should_escape(self, template_name: str | None) -> bool:
+        if template_name is None:
+            return True
+
+        return not template_name.lower().endswith(tuple(self.non_html_extensions))
+
+
+class SelectiveAutoEscapePolicy(AutoEscapePolicy):
+    """Escape only templates whose name uses an HTML extension.
+
+    This preserves Flask's historical, extension-based behavior, which is
+    the default. A name without a recognized HTML extension (or no name
+    at all, such as a source string) is escaped as well; only names with
+    a different extension, such as ``mail.txt``, are not escaped.
+    """
+
+    def should_escape(self, template_name: str | None) -> bool:
+        if template_name is None:
+            return True
+
+        return template_name.lower().endswith(tuple(_default_html_extensions))
+
+
+class TextAutoEscapePolicy(AutoEscapePolicy):
+    """Never autoescape, for output that is not HTML such as plain-text
+    email. This must be selected explicitly through configuration; it is
+    never implied by a template name.
+
+    Values marked with :class:`markupsafe.Markup` or the ``|safe``
+    filter are still rendered unescaped, since both represent an explicit
+    decision by the application to trust a value.
+    """
+
+    def should_escape(self, template_name: str | None) -> bool:
+        return False
+
+
+#: Policies selectable by name through the ``JINJA_AUTOESCAPE_POLICY``
+#: config key.
+_autoescape_policies: dict[str, type[AutoEscapePolicy]] = {
+    "html": HTMLAutoEscapePolicy,
+    "selective": SelectiveAutoEscapePolicy,
+    "text": TextAutoEscapePolicy,
+}
 
 
 class Environment(BaseEnvironment):

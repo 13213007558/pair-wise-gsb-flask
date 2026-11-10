@@ -28,6 +28,58 @@ Unless customized, Jinja is configured by Flask as follows:
     Jinja context, additionally to the values that are present by
     default.
 
+Configuring Autoescaping
+------------------------
+
+Relying on the file extension is fragile when templates use other
+extensions, such as ``.jinja``, or when the template name comes from
+user input. The ``JINJA_AUTOESCAPE_POLICY`` config key makes the
+autoescaping strategy explicit and inspectable. It accepts one of the
+built-in policy names, an :class:`~flask.templating.AutoEscapePolicy`
+subclass or instance, or any callable taking the template name (``None``
+for a source string) and returning a bool.
+
+.. code-block:: python
+
+    from flask import Flask
+    from flask.templating import HTMLAutoEscapePolicy
+
+    # Strict HTML: escape every template except explicit plain text.
+    app = Flask(__name__)
+    app.config["JINJA_AUTOESCAPE_POLICY"] = "html"
+
+    # Configure which extensions are plain text instead of HTML.
+    app.config["JINJA_AUTOESCAPE_POLICY"] = HTMLAutoEscapePolicy(
+        non_html_extensions={".txt", ".email"}
+    )
+
+The available policies are:
+
+-   :class:`~flask.templating.SelectiveAutoEscapePolicy`
+    (``"selective"``, the default): the historical extension-based
+    behavior described above.
+-   :class:`~flask.templating.HTMLAutoEscapePolicy` (``"html"``): the
+    strict policy. Everything is escaped unless the name uses a
+    configured plain-text extension (``.txt`` and ``.text`` by default).
+    A user-controlled template name cannot disable escaping by choosing
+    an extension.
+-   :class:`~flask.templating.TextAutoEscapePolicy` (``"text"``): never
+    escape, for plain-text email and similar output. This is an explicit
+    configuration choice; a template name alone never selects it.
+
+The policy becomes the ``autoescape`` argument of that application's
+Jinja environment, so :func:`~flask.templating.render_template`,
+:func:`~flask.templating.render_template_string`,
+:func:`~flask.templating.stream_template` and
+:func:`~flask.templating.stream_template_string` all follow it, including
+templates reached through ``{% extends %}``, ``{% include %}`` and
+``{% import %}``. Two applications with different policies keep separate
+environments and do not affect each other, even inside one process. No
+global Jinja setting is modified.
+
+A runnable before/after migration, including streaming output, is in
+``examples/template_autoescape``.
+
 Standard Context
 ----------------
 

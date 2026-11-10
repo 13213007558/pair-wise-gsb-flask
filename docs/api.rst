@@ -275,6 +275,18 @@ Template Rendering
 
 .. autofunction:: get_template_attribute
 
+.. autoclass:: flask.templating.AutoEscapePolicy
+   :members:
+
+.. autoclass:: flask.templating.SelectiveAutoEscapePolicy
+   :members:
+
+.. autoclass:: flask.templating.HTMLAutoEscapePolicy
+   :members:
+
+.. autoclass:: flask.templating.TextAutoEscapePolicy
+   :members:
+
 Configuration
 -------------
 

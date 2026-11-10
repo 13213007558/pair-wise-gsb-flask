@@ -530,3 +530,157 @@ def test_custom_jinja_env():
 
     app = CustomFlask(__name__)
     assert isinstance(app.jinja_env, CustomEnvironment)
+
+
+class TestAutoEscapePolicy:
+    """The configurable JINJA_AUTOESCAPE_POLICY replaces extension-only
+    decisions while keeping the historical default."""
+
+    sample = '<b id="x">&amp; "q" \'a\''
+    escaped = "&lt;b id=&#34;x&#34;&gt;&amp;amp; &#34;q&#34; &#39;a&#39;"
+
+    def test_default_policy_is_historical_selective(self, app, req_ctx):
+        assert app.config["JINJA_AUTOESCAPE_POLICY"] == "selective"
+        assert isinstance(
+            app.jinja_autoescape_policy,
+            flask.templating.SelectiveAutoEscapePolicy,
+        )
+        assert app.select_jinja_autoescape("page.html") is True
+        assert app.select_jinja_autoescape("page.SVG") is True
+        assert app.select_jinja_autoescape("mail.txt") is False
+        assert app.select_jinja_autoescape("page.jinja") is False
+        assert app.select_jinja_autoescape(None) is True
+
+    def test_render_paths_share_the_environment_policy(self, app, req_ctx):
+        app.config["JINJA_AUTOESCAPE_POLICY"] = "html"
+
+        rendered = flask.render_template_string("{{ v }}", v=self.sample)
+        streamed = "".join(flask.stream_template_string("{{ v }}", v=self.sample))
+        assert rendered == self.escaped
+        assert streamed == self.escaped
+
+        assert (
+            flask.render_template("simple_template.html", whiskey=self.sample)
+            == f"<h1>{self.escaped}</h1>"
+        )
+
+    def test_strict_policy_escapes_unknown_and_user_chosen_names(self, app, req_ctx):
+        app.config["JINJA_AUTOESCAPE_POLICY"] = "html"
+        policy = app.jinja_autoescape_policy
+
+        for name in ("user.jinja", "user", "user.xyz", "PAGE.HTML", None):
+            assert policy(name) is True, name
+
+        assert policy("mail.txt") is False
+        assert policy("plain.text") is False
+
+    def test_strict_policy_custom_text_extensions(self, req_ctx):
+        app = flask.Flask(__name__)
+        app.config["JINJA_AUTOESCAPE_POLICY"] = flask.templating.HTMLAutoEscapePolicy(
+            non_html_extensions={".email", ".md"}
+        )
+        policy = app.jinja_autoescape_policy
+        assert policy("message.email") is False
+        assert policy("message.md") is False
+        assert policy("message.txt") is True
+        assert policy("message.jinja") is True
+
+    def test_text_policy_never_escapes_but_respects_safe(self, app, req_ctx):
+        app.config["JINJA_AUTOESCAPE_POLICY"] = "text"
+        assert app.select_jinja_autoescape("anything.html") is False
+
+        assert flask.render_template_string("{{ v }}", v=self.sample) == (self.sample)
+        source = "{{ a }}|{{ b }}"
+        rendered = flask.render_template_string(
+            source, a=self.sample, b=Markup(self.sample)
+        )
+        assert rendered == f"{self.sample}|{self.sample}"
+
+    def test_policy_instance_and_subclass_in_config(self, req_ctx):
+        class ShoutPolicy(flask.templating.AutoEscapePolicy):
+            def should_escape(self, template_name):
+                return template_name != "raw.txt"
+
+        app = flask.Flask(__name__)
+        app.config["JINJA_AUTOESCAPE_POLICY"] = ShoutPolicy
+        assert isinstance(app.jinja_autoescape_policy, ShoutPolicy)
+        assert app.jinja_autoescape_policy("raw.txt") is False
+        assert app.jinja_autoescape_policy("other.html") is True
+
+        app2 = flask.Flask(__name__)
+        instance = ShoutPolicy()
+        app2.config["JINJA_AUTOESCAPE_POLICY"] = instance
+        assert app2.jinja_autoescape_policy is instance
+
+    def test_plain_callable_policy(self, req_ctx):
+        app = flask.Flask(__name__)
+        app.config["JINJA_AUTOESCAPE_POLICY"] = lambda name: name is None
+        assert app.jinja_autoescape_policy(None) is True
+        assert app.jinja_autoescape_policy("x.html") is False
+
+    def test_unknown_policy_name_raises(self, req_ctx):
+        app = flask.Flask(__name__)
+        app.config["JINJA_AUTOESCAPE_POLICY"] = "bogus"
+        with pytest.raises(RuntimeError, match="Unknown JINJA_AUTOESCAPE_POLICY"):
+            app.jinja_env  # noqa: B018
+
+    def test_invalid_policy_value_raises(self, req_ctx):
+        app = flask.Flask(__name__)
+        app.config["JINJA_AUTOESCAPE_POLICY"] = 123
+        with pytest.raises(RuntimeError, match="must be a policy name"):
+            app.jinja_env  # noqa: B018
+
+    def test_jinja_options_autoescape_still_wins(self, req_ctx):
+        app = flask.Flask(__name__)
+        app.config["JINJA_AUTOESCAPE_POLICY"] = "html"
+        # jinja_options is a class-level dict, restore it to avoid
+        # leaking the override into other applications.
+        previous = app.jinja_options.copy()
+        try:
+            app.jinja_options["autoescape"] = False
+            with app.app_context():
+                assert (
+                    flask.render_template_string("{{ v }}", v=self.sample)
+                    == self.sample
+                )
+        finally:
+            app.jinja_options.clear()
+            app.jinja_options.update(previous)
+
+    def test_two_apps_with_different_policies_are_isolated(self, req_ctx):
+        strict = flask.Flask(__name__)
+        strict.config["JINJA_AUTOESCAPE_POLICY"] = "html"
+        plain = flask.Flask(__name__)
+        plain.config["JINJA_AUTOESCAPE_POLICY"] = "text"
+
+        assert strict.jinja_env.autoescape is not plain.jinja_env.autoescape
+
+        with strict.app_context():
+            strict_output = flask.render_template_string("{{ v }}", v=self.sample)
+        with plain.app_context():
+            plain_output = flask.render_template_string("{{ v }}", v=self.sample)
+
+        assert strict_output == self.escaped
+        assert plain_output == self.sample
+
+        # The global Jinja defaults were never modified.
+        from jinja2 import Environment
+
+        assert Environment().autoescape is False
+
+    def test_streaming_chunking_is_stable(self, app, req_ctx):
+        app.config["JINJA_AUTOESCAPE_POLICY"] = "html"
+        source = "{% for i in range(3) %}{{ v }}-{{ i }};{% endfor %}"
+        full = flask.render_template_string(source, v=self.sample)
+        chunks = list(flask.stream_template_string(source, v=self.sample))
+
+        assert "".join(chunks) == full
+        for size in (1, 2, 4, 7, 1000):
+            buf, grouped = "", []
+            for chunk in chunks:
+                buf += str(chunk)
+                while len(buf) >= size:
+                    grouped.append(buf[:size])
+                    buf = buf[size:]
+            grouped.append(buf)
+            assert "".join(grouped) == full

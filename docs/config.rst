@@ -374,6 +374,39 @@ The following configuration values are used internally by Flask:
 
     Default: ``None``
 
+.. py:data:: JINJA_AUTOESCAPE_POLICY
+
+    Selects the policy that decides whether Jinja autoescaping is active
+    when each template is compiled. The policy is per application; it is
+    passed to the application's own Jinja environment and never changes
+    Jinja globally.
+
+    The following built-in names are accepted:
+
+    -   ``"selective"`` (the default): the historical behavior. Only
+        templates whose name ends in ``.html``, ``.htm``, ``.xml``,
+        ``.xhtml`` or ``.svg`` are escaped, together with templates
+        rendered from a source string. A template with another extension
+        such as ``.jinja`` or ``.txt`` is not escaped.
+    -   ``"html"``: the strict policy. Every template is escaped unless
+        its name ends in a plain-text extension (``.txt`` or ``.text`` by
+        default). A template name supplied at run time cannot use an
+        extension to disable escaping. Configure the extensions with an
+        :class:`~flask.templating.HTMLAutoEscapePolicy` instance.
+    -   ``"text"``: never autoescape. Use this for plain-text output such
+        as email. It must be selected explicitly and is never implied by
+        a template name.
+
+    Instead of a name, the value may be an
+    :class:`~flask.templating.AutoEscapePolicy` subclass or instance, or
+    any callable taking the template name (``None`` for source strings)
+    and returning a bool. An explicit ``autoescape`` entry in
+    :attr:`~flask.Flask.jinja_options` still takes precedence.
+
+    Default: ``"selective"``
+
+    .. versionadded:: 3.2
+
 .. py:data:: EXPLAIN_TEMPLATE_LOADING
 
     Log debugging information tracing how a template file was loaded. This can

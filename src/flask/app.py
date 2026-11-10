@@ -232,6 +232,10 @@ class Flask(App):
         "TEMPLATES_AUTO_RELOAD": None,
         "MAX_COOKIE_SIZE": 4093,
         "PROVIDE_AUTOMATIC_OPTIONS": True,
+        # "selective" keeps the historical extension-based behavior.
+        # "html" enables the strict policy, "text" disables escaping
+        # for explicit plain-text output.
+        "JINJA_AUTOESCAPE_POLICY": "selective",
     }
 
     #: The class that is used for request objects.  See :class:`~flask.Request`
@@ -470,6 +474,16 @@ class Flask(App):
         :attr:`jinja_options` after this will have no effect. Also adds
         Flask-related globals and filters to the environment.
 
+        The ``autoescape`` option defaults to the application's
+        :attr:`~.sansio.App.jinja_autoescape_policy`, selected through
+        the ``JINJA_AUTOESCAPE_POLICY`` config key. Setting
+        ``autoescape`` explicitly in :attr:`jinja_options` still takes
+        precedence.
+
+        .. versionchanged:: 3.2
+           Use the configured ``JINJA_AUTOESCAPE_POLICY`` instead of
+           :meth:`select_jinja_autoescape` directly.
+
         .. versionchanged:: 0.11
            ``Environment.auto_reload`` set in accordance with
            ``TEMPLATES_AUTO_RELOAD`` configuration option.
@@ -479,7 +493,7 @@ class Flask(App):
         options = dict(self.jinja_options)
 
         if "autoescape" not in options:
-            options["autoescape"] = self.select_jinja_autoescape
+            options["autoescape"] = self.jinja_autoescape_policy
 
         if "auto_reload" not in options:
             auto_reload = self.config["TEMPLATES_AUTO_RELOAD"]
