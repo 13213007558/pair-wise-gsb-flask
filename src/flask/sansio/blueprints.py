@@ -160,6 +160,10 @@ class Blueprint(Scaffold):
         this based on ``import_name``. In certain situations this
         automatic detection can fail, so the path can be specified
         manually instead.
+    :param external_url_policy: Name of the external URL policy in the
+        app's :data:`~flask.Flask.EXTERNAL_URL_POLICIES` config to use
+        when building external URLs for this blueprint's endpoints.
+        Overridden by a policy on a more specific nested blueprint.
 
     .. versionchanged:: 1.1.0
         Blueprints have a ``cli`` group to register nested CLI commands.
@@ -183,6 +187,7 @@ class Blueprint(Scaffold):
         url_defaults: dict[str, t.Any] | None = None,
         root_path: str | None = None,
         cli_group: str | None = _sentinel,  # type: ignore[assignment]
+        external_url_policy: str | None = None,
     ):
         super().__init__(
             import_name=import_name,
@@ -201,6 +206,7 @@ class Blueprint(Scaffold):
         self.name = name
         self.url_prefix = url_prefix
         self.subdomain = subdomain
+        self.external_url_policy = external_url_policy
         self.deferred_functions: list[DeferredSetupFunction] = []
 
         if url_defaults is None:

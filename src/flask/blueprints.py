@@ -28,6 +28,7 @@ class Blueprint(SansioBlueprint):
         url_defaults: dict[str, t.Any] | None = None,
         root_path: str | None = None,
         cli_group: str | None = _sentinel,  # type: ignore
+        external_url_policy: str | None = None,
     ) -> None:
         super().__init__(
             name,
@@ -40,6 +41,7 @@ class Blueprint(SansioBlueprint):
             url_defaults,
             root_path,
             cli_group,
+            external_url_policy=external_url_policy,
         )
 
         #: The Click command group for registering CLI commands for this

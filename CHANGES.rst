@@ -30,6 +30,13 @@ Unreleased
     of only lower case file extensions. :pr:`6012`
 -   Fix parsing IPv6 with port in ``run`` and the test client. :pr:`6096`
 -   Add ``app.query`` route decorator for the HTTP QUERY method.
+-   Add the ``EXTERNAL_URL_POLICIES`` and ``EXTERNAL_URL_POLICY`` config values,
+    and the ``external_url_policy`` blueprint argument, to generate external
+    ``url_for`` URLs from configured trusted scheme, host, and port values
+    instead of the request's potentially untrusted ``Host`` header. The policy
+    applies both in requests and in app contexts such as background tasks, does
+    not affect relative URLs, and raises ``ExternalURLPolicyError`` instead of
+    silently falling back to the request host.
 
 
 Version 3.1.3

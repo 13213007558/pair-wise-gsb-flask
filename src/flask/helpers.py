@@ -219,14 +219,22 @@ def url_for(
     :param _method: If given, generate the URL associated with this
         method for the endpoint.
     :param _scheme: If given, the URL will have this scheme if it is
-        external.
+        external. With an external URL policy, this overrides only the
+        policy's scheme.
     :param _external: If given, prefer the URL to be internal (False) or
         require it to be external (True). External URLs include the
         scheme and domain. When not in an active request, URLs are
-        external by default.
+        external by default. When an external URL policy is configured,
+        the external origin comes from that policy instead of the
+        request's host.
     :param values: Values to use for the variable parts of the URL rule.
         Unknown keys are appended as query string arguments, like
         ``?a=b&c=d``.
+
+    .. versionchanged:: 3.2
+        External URLs can use a configured trusted origin through
+        ``EXTERNAL_URL_POLICIES`` and ``EXTERNAL_URL_POLICY`` instead
+        of the request's host.
 
     .. versionchanged:: 2.2
         Calls ``current_app.url_for``, allowing an app to override the

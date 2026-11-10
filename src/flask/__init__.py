@@ -35,5 +35,6 @@ from .templating import render_template as render_template
 from .templating import render_template_string as render_template_string
 from .templating import stream_template as stream_template
 from .templating import stream_template_string as stream_template_string
+from .url_policy import ExternalURLPolicyError as ExternalURLPolicyError
 from .wrappers import Request as Request
 from .wrappers import Response as Response

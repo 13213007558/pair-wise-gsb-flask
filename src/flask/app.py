@@ -49,6 +49,8 @@ from .signals import request_finished
 from .signals import request_started
 from .signals import request_tearing_down
 from .templating import Environment
+from .url_policy import get_external_url_policy
+from .url_policy import make_policy_url_adapter
 from .wrappers import Request
 from .wrappers import Response
 
@@ -213,6 +215,8 @@ class Flask(App):
         "TRUSTED_HOSTS": None,
         "SERVER_NAME": None,
         "APPLICATION_ROOT": "/",
+        "EXTERNAL_URL_POLICIES": {},
+        "EXTERNAL_URL_POLICY": None,
         "SESSION_COOKIE_NAME": "session",
         "SESSION_COOKIE_DOMAIN": None,
         "SESSION_COOKIE_PATH": None,
@@ -1142,6 +1146,33 @@ class Flask(App):
 
         return asgiref_async_to_sync(func)
 
+    def get_external_url_adapter(
+        self, endpoint: str, blueprint_name: str | None = None
+    ) -> MapAdapter | None:
+        """Get a URL adapter bound to the external URL policy that applies
+        to ``endpoint``.
+
+        The policy is selected from the endpoint's blueprint or the
+        app-wide :data:`EXTERNAL_URL_POLICY` config. The adapter is bound
+        only to configured scheme, host, and port values, never to the
+        active request, so external URLs are identical inside a request
+        and in an app context.
+
+        Returns ``None`` when no policy applies, leaving the standard
+        request-based behavior in place. Raises
+        :exc:`~flask.ExternalURLPolicyError` when a policy is selected
+        but is not configured correctly, instead of falling back to the
+        potentially untrusted request host.
+
+        .. versionadded:: 3.2
+        """
+        policy_name = get_external_url_policy(self, endpoint, blueprint_name)
+
+        if policy_name is None:
+            return None
+
+        return make_policy_url_adapter(self, policy_name)
+
     def url_for(
         self,
         /,
@@ -1171,6 +1202,19 @@ class Flask(App):
         domain to use. :data:`APPLICATION_ROOT` and
         :data:`PREFERRED_URL_SCHEME` should also be configured as
         needed. This config is only used when not in an active request.
+
+        To avoid using the request's potentially untrusted ``Host``
+        header for external URLs, configure
+        :data:`EXTERNAL_URL_POLICIES` and select one with
+        :data:`EXTERNAL_URL_POLICY` or a blueprint's
+        ``external_url_policy``. When a policy applies, external URLs use
+        only the configured scheme, host, and port, both inside a request
+        and in an app context such as a background task. Relative URLs
+        are not affected. An explicit ``_scheme`` overrides only the
+        scheme; the host and port still come from the policy. If the
+        selected policy is not configured, an
+        :exc:`~flask.ExternalURLPolicyError` is raised instead of falling
+        back to the request host.
 
         Functions can be decorated with :meth:`url_defaults` to modify
         keyword arguments before the URL is built.
@@ -1224,28 +1268,44 @@ class Flask(App):
             else:
                 url_adapter = self.create_url_adapter(None)
 
-            if url_adapter is None:
-                raise RuntimeError(
-                    "Unable to build URLs outside an active request"
-                    " without 'SERVER_NAME' configured. Also configure"
-                    " 'APPLICATION_ROOT' and 'PREFERRED_URL_SCHEME' as"
-                    " needed."
-                )
-
             # When outside a request, generate a URL with scheme and
             # domain by default.
             if _external is None:
                 _external = True
+
+            blueprint_name = None
 
         # It is an error to set _scheme when _external=False, in order
         # to avoid accidental insecure URLs.
         if _scheme is not None and not _external:
             raise ValueError("When specifying '_scheme', '_external' must be True.")
 
+        # When an external URL policy applies, build the external URL
+        # with an adapter bound to the configured origin instead of the
+        # request's Host. This also works without 'SERVER_NAME', since
+        # the policy supplies the origin. A missing or invalid policy
+        # raises rather than silently falling back to the request host.
+        # An explicit '_scheme' still overrides only the scheme.
+        if _external:
+            policy_adapter = self.get_external_url_adapter(endpoint, blueprint_name)
+
+            if policy_adapter is not None:
+                url_adapter = policy_adapter
+
+        if url_adapter is None:
+            raise RuntimeError(
+                "Unable to build URLs outside an active request without"
+                " 'SERVER_NAME' configured. Also configure"
+                " 'APPLICATION_ROOT' and 'PREFERRED_URL_SCHEME' as needed,"
+                " or define an 'EXTERNAL_URL_POLICY'."
+            )
+
         self.inject_url_defaults(endpoint, values)
 
+        assert url_adapter is not None
+
         try:
-            rv = url_adapter.build(  # type: ignore[union-attr]
+            rv = url_adapter.build(
                 endpoint,
                 values,
                 method=_method,
