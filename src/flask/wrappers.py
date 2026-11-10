@@ -15,6 +15,33 @@ if t.TYPE_CHECKING:  # pragma: no cover
     from werkzeug.routing import Rule
 
 
+class RequestLimits(t.NamedTuple):
+    """Body limits applied to a request, selected per matched endpoint.
+
+    Register an instance for an endpoint in :attr:`Flask.request_limits`,
+    or return one from :meth:`Flask.select_request_limits`. The
+    application applies the selected limits to the request before any
+    ``before_request`` function or view runs, so that all body access
+    sees the same fixed policy.
+
+    A field set to ``None`` in a registered instance falls back to the
+    corresponding config default. A field that is ``None`` after
+    defaults are applied means no limit is enforced.
+
+    .. versionadded:: 3.2
+    """
+
+    #: Total body size limit, falls back to :data:`MAX_CONTENT_LENGTH`.
+    max_content_length: int | None = None
+
+    #: Multipart form field memory limit, falls back to
+    #: :data:`MAX_FORM_MEMORY_SIZE`.
+    max_form_memory_size: int | None = None
+
+    #: Multipart part count limit, falls back to :data:`MAX_FORM_PARTS`.
+    max_form_parts: int | None = None
+
+
 class Request(RequestBase):
     """The request object used by default in Flask.  Remembers the
     matched endpoint and view arguments.
@@ -57,6 +84,55 @@ class Request(RequestBase):
     _max_form_parts: int | None = None
 
     @property
+    def _body_read_started(self) -> bool:
+        """Whether anything has started consuming the request body. Once
+        this is true, limits can only be tightened, not relaxed.
+        """
+        d = self.__dict__
+        return "stream" in d or "_cached_data" in d or "form" in d
+
+    def _check_limit_not_relaxed(self, name: str, value: int | None) -> None:
+        if not self._body_read_started:
+            return
+
+        current: int | None = getattr(self, name)
+
+        if current is None:
+            return
+
+        if value is None or value > current:
+            raise RuntimeError(
+                f"Cannot relax {name!r} after the request body has"
+                " started being read. Set the limit before the body is"
+                " consumed, for example with 'app.request_limits' or the"
+                " corresponding config."
+            )
+
+    def apply_request_limits(self, limits: RequestLimits) -> None:
+        """Set the effective body limits for this request.
+
+        This is called by the application during dispatch, after URL
+        matching but before ``before_request`` functions and the view
+        run. Fixing the policy this early ensures that extensions which
+        consume the body in a ``before_request`` handler are limited in
+        exactly the same way as the view, regardless of whether the body
+        is accessed through :meth:`get_data`, :attr:`form`, or
+        :attr:`files` first.
+
+        After the body has started being read, limits can only be
+        tightened. Trying to relax a limit raises ``RuntimeError``, so
+        the effective policy cannot be widened once consumption has
+        begun.
+
+        :param limits: The resolved limits to apply.
+
+        .. versionadded:: 3.2
+        """
+        self.max_content_length = limits.max_content_length
+        self.max_form_memory_size = limits.max_form_memory_size
+        self.max_form_parts = limits.max_form_parts
+
+    @property
     def max_content_length(self) -> int | None:
         """The maximum number of bytes that will be read during this request. If
         this limit is exceeded, a 413 :exc:`~werkzeug.exceptions.RequestEntityTooLarge`
@@ -87,6 +163,7 @@ class Request(RequestBase):
 
     @max_content_length.setter
     def max_content_length(self, value: int | None) -> None:
+        self._check_limit_not_relaxed("max_content_length", value)
         self._max_content_length = value
 
     @property
@@ -114,6 +191,7 @@ class Request(RequestBase):
 
     @max_form_memory_size.setter
     def max_form_memory_size(self, value: int | None) -> None:
+        self._check_limit_not_relaxed("max_form_memory_size", value)
         self._max_form_memory_size = value
 
     @property  # type: ignore[override]
@@ -141,6 +219,7 @@ class Request(RequestBase):
 
     @max_form_parts.setter
     def max_form_parts(self, value: int | None) -> None:
+        self._check_limit_not_relaxed("max_form_parts", value)
         self._max_form_parts = value
 
     @property
@@ -194,8 +273,40 @@ class Request(RequestBase):
 
         return _split_blueprint_path(name)
 
+    def _get_file_stream(
+        self,
+        total_content_length: int | None,
+        content_type: str | None,
+        filename: str | None = None,
+        content_length: int | None = None,
+    ) -> t.IO[bytes]:
+        stream = super()._get_file_stream(
+            total_content_length, content_type, filename, content_length
+        )
+        pending: list[t.IO[bytes]] = self.__dict__.setdefault(
+            "_pending_upload_streams", []
+        )
+        pending.append(stream)
+        return stream
+
     def _load_form_data(self) -> None:
-        super()._load_form_data()
+        try:
+            super()._load_form_data()
+        except Exception:
+            # Parsing failed partway, such as exceeding a limit or the
+            # input stream failing. Upload streams opened so far are not
+            # reachable through ``files``, close them here.
+            for stream in self.__dict__.pop("_pending_upload_streams", []):
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+            raise
+
+        # Ownership of opened upload streams moved to ``files``, which
+        # is closed by ``close``.
+        self.__dict__.pop("_pending_upload_streams", None)
 
         # In debug mode we're replacing the files multidict with an ad-hoc
         # subclass that raises a different error for key errors.

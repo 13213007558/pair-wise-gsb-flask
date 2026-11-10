@@ -30,6 +30,15 @@ Unreleased
     of only lower case file extensions. :pr:`6012`
 -   Fix parsing IPv6 with port in ``run`` and the test client. :pr:`6096`
 -   Add ``app.query`` route decorator for the HTTP QUERY method.
+-   Add ``app.request_limits`` and ``Flask.select_request_limits`` to choose
+    request body limits (total size, form field memory, multipart parts) per
+    matched endpoint, falling back to the ``MAX_CONTENT_LENGTH``,
+    ``MAX_FORM_MEMORY_SIZE``, and ``MAX_FORM_PARTS`` config. The selected
+    limits are fixed on the request before ``before_request`` functions run,
+    so extensions that consume the body early are limited the same way as
+    views. Once the body has started being read, limits can only be
+    tightened; relaxing them raises ``RuntimeError``. Upload streams opened
+    before a failed parse are closed.
 
 
 Version 3.1.3

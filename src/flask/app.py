@@ -50,6 +50,7 @@ from .signals import request_started
 from .signals import request_tearing_down
 from .templating import Environment
 from .wrappers import Request
+from .wrappers import RequestLimits
 from .wrappers import Response
 
 if t.TYPE_CHECKING:  # pragma: no cover
@@ -336,6 +337,28 @@ class Flask(App):
         #: once the application has been discovered and blueprints have
         #: been registered.
         self.cli = cli.AppGroup()
+
+        #: A mapping of endpoint names to :class:`RequestLimits`,
+        #: selecting body limits per matched endpoint instead of only
+        #: using the global :data:`MAX_CONTENT_LENGTH`,
+        #: :data:`MAX_FORM_MEMORY_SIZE`, and :data:`MAX_FORM_PARTS`
+        #: config. This allows, for example, a file import route to
+        #: accept large bodies while small form routes stay tightly
+        #: limited.
+        #:
+        #: .. code-block:: python
+        #:
+        #:     app.request_limits["import"] = RequestLimits(
+        #:         max_content_length=100 * 1024 * 1024
+        #:     )
+        #:
+        #: Fields left as ``None`` fall back to the corresponding config
+        #: default. Endpoints not present in the mapping, and requests
+        #: that did not match a route, use only the config defaults. See
+        #: :meth:`select_request_limits` for dynamic selection.
+        #:
+        #: .. versionadded:: 3.2
+        self.request_limits: dict[str, RequestLimits] = {}
 
         # Set the name of the Click group in case someone wants to add
         # the app's commands to another CLI tool.
@@ -1020,6 +1043,66 @@ class Flask(App):
         view_args: dict[str, t.Any] = req.view_args  # type: ignore[assignment]
         return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
 
+    def select_request_limits(self, endpoint: str | None) -> RequestLimits:
+        """Choose the body limits for the request being dispatched,
+        based on the matched endpoint.
+
+        This is called at the start of dispatch, after URL matching but
+        before ``before_request`` functions and the view run. The
+        returned limits are fixed on the request before any body data
+        can be consumed, so code that reads the body early, such as an
+        extension parsing ``request.form`` in a ``before_request``
+        handler, is limited in exactly the same way as the view itself.
+
+        The default implementation looks up ``endpoint`` in
+        :attr:`request_limits`. Fields left as ``None`` fall back to the
+        :data:`MAX_CONTENT_LENGTH`, :data:`MAX_FORM_MEMORY_SIZE`, and
+        :data:`MAX_FORM_PARTS` config. If the URL did not match a route,
+        ``endpoint`` is ``None`` and only the config defaults are used.
+
+        Override this to select limits dynamically, for example based on
+        the current user or matched view arguments:
+
+        .. code-block:: python
+
+            class App(Flask):
+                def select_request_limits(self, endpoint):
+                    if endpoint == "import":
+                        return RequestLimits(
+                            max_content_length=100 * 1024 * 1024
+                        )
+
+                    return super().select_request_limits(endpoint)
+
+        :param endpoint: The matched endpoint, or ``None`` if URL
+            matching failed.
+
+        .. versionadded:: 3.2
+        """
+        registered = self.request_limits.get(endpoint) if endpoint is not None else None
+
+        if registered is None:
+            registered = RequestLimits()
+
+        config = self.config
+        return RequestLimits(
+            max_content_length=(
+                registered.max_content_length
+                if registered.max_content_length is not None
+                else config["MAX_CONTENT_LENGTH"]
+            ),
+            max_form_memory_size=(
+                registered.max_form_memory_size
+                if registered.max_form_memory_size is not None
+                else config["MAX_FORM_MEMORY_SIZE"]
+            ),
+            max_form_parts=(
+                registered.max_form_parts
+                if registered.max_form_parts is not None
+                else config["MAX_FORM_PARTS"]
+            ),
+        )
+
     def full_dispatch_request(self, ctx: AppContext) -> Response:
         """Dispatches the request and on top of that performs request
         pre and postprocessing as well as HTTP exception catching and
@@ -1045,6 +1128,9 @@ class Flask(App):
         self._got_first_request = True
 
         try:
+            ctx.request.apply_request_limits(
+                self.select_request_limits(ctx.request.endpoint)
+            )
             request_started.send(self, _async_wrapper=self.ensure_sync)
             rv = self.preprocess_request(ctx)
             if rv is None:

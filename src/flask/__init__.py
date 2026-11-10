@@ -36,4 +36,5 @@ from .templating import render_template_string as render_template_string
 from .templating import stream_template as stream_template
 from .templating import stream_template_string as stream_template_string
 from .wrappers import Request as Request
+from .wrappers import RequestLimits as RequestLimits
 from .wrappers import Response as Response

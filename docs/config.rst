@@ -329,7 +329,8 @@ The following configuration values are used internally by Flask:
     Each request defaults to this config. It can be set on a specific
     :attr:`.Request.max_content_length` to apply the limit to that specific
     view. This should be set appropriately based on an application's or view's
-    specific needs.
+    specific needs. See :attr:`Flask.request_limits` to choose limits per
+    matched endpoint instead.
 
     Default: ``None``
 
@@ -345,7 +346,8 @@ The following configuration values are used internally by Flask:
     Each request defaults to this config. It can be set on a specific
     :attr:`.Request.max_form_memory_parts` to apply the limit to that specific
     view. This should be set appropriately based on an application's or view's
-    specific needs.
+    specific needs. See :attr:`Flask.request_limits` to choose limits per
+    matched endpoint instead.
 
     Default: ``500_000``
 
@@ -361,7 +363,8 @@ The following configuration values are used internally by Flask:
     Each request defaults to this config. It can be set on a specific
     :attr:`.Request.max_form_parts` to apply the limit to that specific view.
     This should be set appropriately based on an application's or view's
-    specific needs.
+    specific needs. See :attr:`Flask.request_limits` to choose limits per
+    matched endpoint instead.
 
     Default: ``1_000``
 

@@ -31,6 +31,9 @@ Incoming Request Data
     :inherited-members:
     :exclude-members: json_module
 
+.. autoclass:: RequestLimits
+    :members:
+
 .. data:: request
 
     A proxy to the request data for the current request, an instance of

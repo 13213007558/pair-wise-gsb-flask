@@ -147,6 +147,29 @@ The code above will limit the maximum allowed payload to 16 megabytes.
 If a larger file is transmitted, Flask will raise a
 :exc:`~werkzeug.exceptions.RequestEntityTooLarge` exception.
 
+A single global limit is often too coarse when an application has both
+small form routes and a file import route. Use
+:attr:`Flask.request_limits` to select limits per matched endpoint
+instead::
+
+    from flask import Flask, RequestLimits
+
+    app = Flask(__name__)
+    app.config['MAX_CONTENT_LENGTH'] = 1 * 1000 * 1000
+    app.request_limits['import'] = RequestLimits(
+        max_content_length=100 * 1000 * 1000
+    )
+
+The selected limits are fixed on the request right after URL matching,
+*before* any ``before_request`` function or view runs. This matters
+because extensions may consume the body early, for example parsing
+``request.form`` in a ``before_request`` handler: they are limited in
+exactly the same way as the view itself. Once the body has started
+being read, limits can only be tightened; trying to relax one raises
+``RuntimeError``, so the effective policy cannot depend on whether
+``get_data()``, ``form``, or ``files`` is accessed first. See
+:meth:`Flask.select_request_limits` to compute limits dynamically.
+
 .. admonition:: Connection Reset Issue
 
     When using the local development server, you may get a connection
