@@ -160,6 +160,52 @@ headers for you.
 
 .. _Flask-Talisman: https://github.com/wntrblm/flask-talisman
 
+Response Policies
+~~~~~~~~~~~~~~~~~
+
+Setting headers in an :meth:`~flask.Flask.after_request` function does not by
+itself guarantee that every response is covered, including automatic
+``OPTIONS`` responses, routing errors such as 404 and 405, and responses
+produced by error handlers. The :meth:`~flask.Flask.response_policy`
+decorator registers a function at a single application-level finalization
+point that runs once for every response, after all ``after_request``
+functions and after the session is saved.
+
+The function receives a :class:`~flask.ResponsePolicyContext` and mutates the
+response in place. The context exposes the matched ``endpoint``, the
+``error`` being handled (if any), and the response ``status_code``, so the
+headers can vary by endpoint or error category::
+
+    @app.response_policy
+    def set_security_headers(ctx):
+        ctx.response.headers["Content-Security-Policy"] = "default-src 'self'"
+        ctx.response.headers["X-Content-Type-Options"] = "nosniff"
+
+        if ctx.endpoint == "auth.login":
+            ctx.response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+A policy runs after ``after_request`` functions, so setting a header in a
+policy overrides the same header set earlier in the request. Blueprint
+policies registered with :meth:`~flask.Blueprint.response_policy` only apply
+to requests handled by that blueprint and run before the app's policies;
+:meth:`~flask.Blueprint.app_response_policy` registers a policy for every
+request.
+
+If a policy raises, the exception is logged and skipped so the remaining
+policies still run and the response is still sent. Policies never run more
+than once per request, so a failure while handling an error cannot re-enter
+the policy chain.
+
+Headers can only be changed before the response is submitted to the WSGI
+server. If a :doc:`streaming <patterns/streaming>` generator raises while its
+body is being iterated, the headers have already been committed and cannot be
+added or replaced at that point; Flask logs that boundary instead of implying
+the response could still be modified. No response policy runs unless one has
+been registered, so an application that does not use this hook behaves
+exactly as before.
+
+.. versionadded:: 3.2
+
 HTTP Strict Transport Security (HSTS)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

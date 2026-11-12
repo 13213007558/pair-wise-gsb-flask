@@ -16,6 +16,7 @@ if t.TYPE_CHECKING:  # pragma: no cover
 
 DeferredSetupFunction = t.Callable[["BlueprintSetupState"], None]
 T_after_request = t.TypeVar("T_after_request", bound=ft.AfterRequestCallable[t.Any])
+T_response_policy = t.TypeVar("T_response_policy", bound=ft.ResponsePolicyCallable)
 T_before_request = t.TypeVar("T_before_request", bound=ft.BeforeRequestCallable)
 T_error_handler = t.TypeVar("T_error_handler", bound=ft.ErrorHandlerCallable)
 T_teardown = t.TypeVar("T_teardown", bound=ft.TeardownCallable)
@@ -401,6 +402,7 @@ class Blueprint(Scaffold):
 
         extend(self.before_request_funcs, app.before_request_funcs)
         extend(self.after_request_funcs, app.after_request_funcs)
+        extend(self.response_policy_funcs, app.response_policy_funcs)
         extend(
             self.teardown_request_funcs,
             app.teardown_request_funcs,
@@ -627,6 +629,18 @@ class Blueprint(Scaffold):
         """
         self.record_once(
             lambda s: s.app.after_request_funcs.setdefault(None, []).append(f)
+        )
+        return f
+
+    @setupmethod
+    def app_response_policy(self, f: T_response_policy) -> T_response_policy:
+        """Like :meth:`response_policy`, but for every request, not only those
+        handled by the blueprint. Equivalent to :meth:`.Flask.response_policy`.
+
+        .. versionadded:: 3.2
+        """
+        self.record_once(
+            lambda s: s.app.response_policy_funcs.setdefault(None, []).append(f)
         )
         return f
 

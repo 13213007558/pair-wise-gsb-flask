@@ -144,6 +144,9 @@ parts that you can use to customize its behavior.
     the response object.
 #.  The session is saved, persisting any modified session data using the app's
     :attr:`~.Flask.session_interface`.
+#.  Any :meth:`~.Flask.response_policy` decorated functions are called once. They can
+    modify the response object, typically to set browser security headers, and a header
+    they set overrides the same header set in an earlier step.
 #.  The :data:`.request_finished` signal is sent.
 #.  If any step so far raised an exception, and it was not handled by an error handler
     function, it is handled now. HTTP exceptions are treated as responses with their

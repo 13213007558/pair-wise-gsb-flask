@@ -37,6 +37,7 @@ T_url_value_preprocessor = t.TypeVar(
     "T_url_value_preprocessor", bound=ft.URLValuePreprocessorCallable
 )
 T_route = t.TypeVar("T_route", bound=ft.RouteCallable)
+T_response_policy = t.TypeVar("T_response_policy", bound=ft.ResponsePolicyCallable)
 
 
 def setupmethod(f: F) -> F:
@@ -151,6 +152,20 @@ class Scaffold:
         #: directly and its format may change at any time.
         self.after_request_funcs: dict[
             ft.AppOrBlueprintKey, list[ft.AfterRequestCallable[t.Any]]
+        ] = defaultdict(list)
+
+        #: A data structure of response policy functions, in the format
+        #: ``{scope: [functions]}``. The ``scope`` key is the name of a
+        #: blueprint the functions are active for, or ``None`` for all
+        #: requests.
+        #:
+        #: To register a function, use the :meth:`response_policy`
+        #: decorator.
+        #:
+        #: This data structure is internal. It should not be modified
+        #: directly and its format may change at any time.
+        self.response_policy_funcs: dict[
+            ft.AppOrBlueprintKey, list[ft.ResponsePolicyCallable]
         ] = defaultdict(list)
 
         #: A data structure of functions to call at the end of each
@@ -510,6 +525,38 @@ class Scaffold:
         execute after every request, use :meth:`.Blueprint.after_app_request`.
         """
         self.after_request_funcs.setdefault(None, []).append(f)
+        return f
+
+    @setupmethod
+    def response_policy(self, f: T_response_policy) -> T_response_policy:
+        """Register a response policy function to run once before the
+        response is sent. The function is passed a
+        :class:`~flask.security.ResponsePolicyContext` and mutates the
+        response in place, typically to set browser security headers such
+        as ``Content-Security-Policy`` or ``Referrer-Policy``.
+
+        Unlike :meth:`after_request`, this is a single application-level
+        finalization point. It runs after all ``after_request`` functions
+        and after the session is saved, for every response including
+        automatic ``OPTIONS`` responses, routing errors such as 404 and
+        405, and responses produced by error handlers. A header set by a
+        policy overrides the same header set by the view or an
+        ``after_request`` function.
+
+        A failure in one policy is logged and skipped; the remaining
+        policies still run and the response is still sent. A policy never
+        runs more than once for a request, so a failure while handling an
+        error cannot re-enter the policy chain.
+
+        This is available on both app and blueprint objects. On an app, it
+        runs for every request. On a blueprint, it only runs for requests
+        handled by that blueprint. Blueprint policies run before app
+        policies, so an app policy takes precedence for a header set by
+        both.
+
+        .. versionadded:: 3.2
+        """
+        self.response_policy_funcs.setdefault(None, []).append(f)
         return f
 
     @setupmethod

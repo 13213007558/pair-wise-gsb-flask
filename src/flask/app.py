@@ -48,6 +48,9 @@ from .signals import got_request_exception
 from .signals import request_finished
 from .signals import request_started
 from .signals import request_tearing_down
+from .security import _PolicyResponseIterator
+from .security import _WSGICommitState
+from .security import ResponsePolicyContext
 from .templating import Environment
 from .wrappers import Request
 from .wrappers import Response
@@ -55,6 +58,7 @@ from .wrappers import Response
 if t.TYPE_CHECKING:  # pragma: no cover
     from _typeshed.wsgi import StartResponse
     from _typeshed.wsgi import WSGIEnvironment
+    from _typeshed.wsgi import WriteCallable
 
     from .testing import FlaskClient
     from .testing import FlaskCliRunner
@@ -947,6 +951,9 @@ class Flask(App):
         """
         exc_info = sys.exc_info()
         got_request_exception.send(self, _async_wrapper=self.ensure_sync, exception=e)
+        # This may replace an error recorded in full_dispatch_request if an
+        # error handler itself failed.
+        ctx._response_error = e
         propagate = self.config["PROPAGATE_EXCEPTIONS"]
 
         if propagate is None:
@@ -1050,6 +1057,10 @@ class Flask(App):
             if rv is None:
                 rv = self.dispatch_request(ctx)
         except Exception as e:
+            # Record the error so response policies can vary headers by the
+            # error category. handle_exception overwrites it if handling the
+            # error raises again.
+            ctx._response_error = e
             rv = self.handle_user_exception(ctx, e)
         return self.finalize_request(ctx, rv)
 
@@ -1451,6 +1462,10 @@ class Flask(App):
             Takes ``ctx: AppContext`` as the first parameter. The old signature
             is deprecated and will not be supported in Flask 4.0.
 
+        .. versionchanged:: 3.2
+            Registered :meth:`response_policy` functions are applied after
+            the ``after_request`` functions and saving the session.
+
         .. versionchanged:: 0.5
             Functions are called in reverse order of registration.
 
@@ -1466,7 +1481,54 @@ class Flask(App):
         if not self.session_interface.is_null_session(ctx._get_session()):
             self.session_interface.save_session(self, ctx._get_session(), response)
 
+        response = self.apply_response_policies(ctx, response)
+
         return response
+
+    def apply_response_policies(self, ctx: AppContext, response: Response) -> Response:
+        """Apply the registered :meth:`response_policy` functions to the
+        response. This is the single finalization point where browser
+        security headers are decided, so the same policies cover normal
+        responses, automatic ``OPTIONS`` responses, routing errors such as
+        404 and 405, and responses from error handlers.
+
+        Policies run after all ``after_request`` functions and after the
+        session is saved. A header set by a policy therefore overrides the
+        same header set earlier in the request. Blueprint policies run
+        before app policies.
+
+        The policies run at most once per request. If a policy raises, the
+        exception is logged and the remaining policies still run; the
+        response is sent without that policy's changes. A failure while
+        handling an error cannot re-enter this method.
+
+        .. versionadded:: 3.2
+        """
+        if ctx._response_policy_done or not self.response_policy_funcs:
+            return response
+
+        ctx._response_policy_done = True
+        policy_ctx = ResponsePolicyContext(
+            response=response,
+            endpoint=ctx.request.endpoint,
+            error=ctx._response_error,
+        )
+
+        for name in chain(ctx.request.blueprints, (None,)):
+            if name not in self.response_policy_funcs:
+                continue
+
+            for func in self.response_policy_funcs[name]:
+                try:
+                    self.ensure_sync(func)(policy_ctx)
+                except Exception:
+                    self.logger.exception(
+                        "Response policy %r failed; continuing without its"
+                        " response changes.",
+                        getattr(func, "__name__", func),
+                    )
+
+        return policy_ctx.response
 
     def do_teardown_request(
         self, ctx: AppContext, exc: BaseException | None = None
@@ -1652,6 +1714,7 @@ class Flask(App):
         """
         ctx = self.request_context(environ)
         error: BaseException | None = None
+        commit_state: _WSGICommitState | None = None
         try:
             try:
                 ctx.push()
@@ -1662,6 +1725,28 @@ class Flask(App):
             except:
                 error = sys.exc_info()[1]
                 raise
+
+            if self.response_policy_funcs:
+                # Policies only exist while headers are not committed. Wrap
+                # the WSGI iteration so a stream that fails after
+                # ``start_response`` is called is reported correctly rather
+                # than implying headers could still be added.
+                commit_state = _WSGICommitState()
+
+                def policy_start_response(
+                    status: str,
+                    headers: list[tuple[str, str]],
+                    exc_info: t.Any = None,
+                ) -> WriteCallable[bytes]:
+                    commit_state.headers_sent = True
+                    return start_response(status, headers, exc_info)
+
+                return _PolicyResponseIterator(
+                    self,
+                    response(environ, policy_start_response),
+                    commit_state,
+                )
+
             return response(environ, start_response)
         finally:
             if "werkzeug.debug.preserve_context" in environ:

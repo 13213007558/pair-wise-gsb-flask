@@ -51,6 +51,10 @@ AfterRequestCallable = (
     t.Callable[[ResponseClass], ResponseClass]
     | t.Callable[[ResponseClass], t.Awaitable[ResponseClass]]
 )
+ResponsePolicyCallable = (
+    t.Callable[["ResponsePolicyContext"], None]
+    | t.Callable[["ResponsePolicyContext"], t.Awaitable[None]]
+)
 BeforeFirstRequestCallable = t.Callable[[], None] | t.Callable[[], t.Awaitable[None]]
 BeforeRequestCallable = (
     t.Callable[[], ResponseReturnValue | None]

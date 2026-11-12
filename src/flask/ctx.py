@@ -322,6 +322,16 @@ class AppContext:
         self._flashes: list[tuple[str, str]] | None = None
         self._after_request_functions: list[ft.AfterRequestCallable[t.Any]] = []
 
+        #: Whether the response policies have already been applied to the
+        #: response for this request. Ensures policies run at most once even
+        #: if finalization is re-entered while handling an error.
+        self._response_policy_done: bool = False
+
+        #: The exception currently being handled while building the
+        #: response, or ``None`` for a normal response. Passed to response
+        #: policies so they can vary headers by error category.
+        self._response_error: BaseException | None = None
+
         try:
             self.url_adapter = app.create_url_adapter(self._request)
         except HTTPException as e:

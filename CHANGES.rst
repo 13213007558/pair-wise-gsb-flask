@@ -30,6 +30,13 @@ Unreleased
     of only lower case file extensions. :pr:`6012`
 -   Fix parsing IPv6 with port in ``run`` and the test client. :pr:`6096`
 -   Add ``app.query`` route decorator for the HTTP QUERY method.
+-   Add ``app.response_policy`` and ``Blueprint.response_policy`` to apply
+    browser security headers such as ``Content-Security-Policy`` at a single
+    finalization point that covers normal responses, automatic ``OPTIONS``,
+    routing errors, and error handler responses. Policies run once, after
+    ``after_request`` functions, cannot re-enter themselves on failure, and
+    report when a streaming response fails after headers have already been
+    committed.
 
 
 Version 3.1.3
